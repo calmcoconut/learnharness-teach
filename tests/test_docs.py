@@ -131,6 +131,27 @@ class DocumentedCommandTest(unittest.TestCase):
         self.assertEqual(missing, [], "\n".join(missing))
 
 
+class InstallPathTest(unittest.TestCase):
+    """The install copies this folder into a skills directory, so `scripts/` is never at
+    the project root. Every shipped command must be written relative to the skill."""
+
+    def test_shipped_docs_never_use_a_bare_scripts_path(self):
+        offenders = []
+        for path in DOCS:
+            if not path.is_file():
+                continue
+            if "python3 scripts/" in path.read_text(encoding="utf-8"):
+                offenders.append(path.name)
+        self.assertEqual(offenders, [], "these docs would fail from an installed skill: %s" % offenders)
+
+    def test_every_documented_command_uses_the_skill_prefix(self):
+        for source, script, _remainder in DocumentedCommandTest.commands:
+            self.assertTrue(
+                (REPO / "scripts" / script).is_file(),
+                "%s cites %s, which is not shipped" % (source, script),
+            )
+
+
 class ReferenceLinkTest(unittest.TestCase):
     def test_every_reference_is_linked_from_skill(self):
         skill = (REPO / "SKILL.md").read_text(encoding="utf-8")

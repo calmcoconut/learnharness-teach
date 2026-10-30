@@ -15,7 +15,7 @@ P7 has to satisfy, not claims that it does.
 | Harness | Project path | User path | Notes |
 |---|---|---|---|
 | Claude Code | `.claude/skills/learnharness-teach/` | `~/.claude/skills/` | Also reads `.claude/commands/*.md` as legacy commands; a skill and a command of the same name collide. Skills load on demand and can run in a forked context. |
-| Codex CLI | `.agents/skills/learnharness-teach/` | `~/.agents/skills/` | Reads `.agents/skills` from the working directory upward to the repo root. It does **not** read `~/.codex/skills`. |
+| Codex CLI | `.agents/skills/learnharness-teach/` | `~/.agents/skills/` | Reads `.agents/skills` from the working directory upward to the repo root. `~/.codex/skills` is the legacy name; the documented path is `~/.agents/skills`. |
 | Antigravity | `.agents/skills/learnharness-teach/` | `~/.gemini/antigravity-cli/skills/`, `~/.gemini/config/skills/`, `~/.gemini/antigravity/skills/` | Legacy `.agent/skills/` (singular) still works. |
 | pi | `.agents/skills/learnharness-teach/` | `~/.agents/skills/`, `~/.pi/agent/skills/` | Also reads `.pi/skills/`. |
 

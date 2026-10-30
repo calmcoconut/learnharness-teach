@@ -8,6 +8,7 @@ nothing outside ``.learnharness/`` is written.
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -148,6 +149,24 @@ def practice_session(project, goal="practice heat", problem=None, result=None):
     return session_id
 
 
+def run_practice_problem(project, session_id, document):
+    with tempfile.TemporaryDirectory() as scratch:
+        path = Path(scratch) / "problem.json"
+        write_json_file(path, document)
+        return run_session(
+            project, "practice-problem", "--session", session_id, "--problem", str(path)
+        )
+
+
+def run_practice_concluded(project, session_id, document):
+    with tempfile.TemporaryDirectory() as scratch:
+        path = Path(scratch) / "result.json"
+        write_json_file(path, document)
+        return run_session(
+            project, "practice-concluded", "--session", session_id, "--result", str(path)
+        )
+
+
 # --------------------------------------------------------------------------
 # init
 # --------------------------------------------------------------------------
@@ -206,13 +225,35 @@ class CheckTests(unittest.TestCase):
             self.assertIn("key", err)
             self.assertEqual(events_of(project, session_id, "check_posed"), [])
 
-    def test_check_refuses_unknown_node(self):
+    def test_check_refuses_unknown_node_after_the_probe(self):
         with TempProject() as project:
             session_id = project.make_session()
+            append_events(
+                project,
+                session_id,
+                [{"type": "probe_concluded", "strands": [{"strand": "s", "assessment": "a"}]}],
+            )
             code, out, err = pose(project, session_id, node="nope")
             self.assertEqual(code, 1)
             self.assertIn("current plan", err)
             self.assertEqual(events_of(project, session_id, "check_posed"), [])
+
+    def test_check_refuses_a_node_tag_before_the_probe_concludes(self):
+        with TempProject() as project:
+            session_id = project.make_session()
+            code, out, err = pose(project, session_id, node="a")
+            self.assertEqual(code, 1)
+            self.assertIn("probe", err)
+            self.assertEqual(events_of(project, session_id, "check_posed"), [])
+
+    def test_probe_phase_checks_still_work_before_the_conclusion(self):
+        with TempProject() as project:
+            session_id = project.make_session()
+            self.assertEqual(pose(project, session_id, key="the key")[0], 0)
+            self.assertEqual(answer(project, session_id, text="x", correct="true")[0], 0)
+            self.assertEqual(len(events_of(project, session_id, "check_posed")), 1)
+            self.assertEqual(len(events_of(project, session_id, "answer")), 1)
+            self.assertEqual(state_json(project, session_id)["phase"], "probe")
 
     def test_check_writes_the_key_into_the_event_without_showing_it(self):
         with TempProject() as project:
@@ -264,6 +305,38 @@ class CheckTests(unittest.TestCase):
             code, out, err = pose(project, session_id, key=None, key_file=key_path)
             self.assertEqual(code, 0, err)
             self.assertEqual(events_of(project, session_id, "check_posed")[0]["key"], "from a file")
+
+
+class ConcurrentCheckTests(unittest.TestCase):
+    def test_parallel_checks_get_unique_seqs_and_leave_exactly_one_open(self):
+        with TempProject() as project:
+            session_id = project.make_session()
+            results = []
+            lock = threading.Lock()
+            barrier = threading.Barrier(6)
+
+            def worker(index):
+                barrier.wait()
+                result = pose(project, session_id, question="parallel %d" % index)
+                with lock:
+                    results.append(result)
+
+            threads = [threading.Thread(target=worker, args=(index,)) for index in range(6)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=30)
+                self.assertFalse(thread.is_alive(), "a check subprocess did not finish")
+
+            events = project.events(session_id)
+            seqs = [event["seq"] for event in events]
+            self.assertEqual(seqs, list(range(1, len(events) + 1)))
+            self.assertEqual(len(set(seqs)), len(seqs))
+
+            checks = events_of(project, session_id, "check_posed")
+            self.assertEqual(len(checks), 1)
+            self.assertEqual([result[0] for result in results].count(0), 1)
+            self.assertEqual(state_json(project, session_id)["open"]["seq"], checks[0]["seq"])
 
 
 # --------------------------------------------------------------------------
@@ -367,6 +440,41 @@ class ConcludeProbeTests(unittest.TestCase):
             self.assertIn("open", err)
             self.assertEqual(events_of(project, session_id, "probe_concluded"), [])
 
+    def test_refuses_before_any_check_has_been_answered(self):
+        with TempProject() as project:
+            session_id = project.make_session()
+            code, out, err = conclude_probe(project, session_id)
+            self.assertEqual(code, 1)
+            self.assertIn("answered", err)
+            self.assertEqual(events_of(project, session_id, "probe_concluded"), [])
+
+            # An answer that names no real check is not a measurement either.
+            append_events(
+                project,
+                session_id,
+                [
+                    {
+                        "type": "answer",
+                        "check_seq": 99,
+                        "selection": ["x"],
+                        "correct": True,
+                        "confidence": 3,
+                        "trace": "t",
+                    }
+                ],
+            )
+            code, out, err = conclude_probe(project, session_id)
+            self.assertEqual(code, 1)
+            self.assertIn("answered", err)
+            self.assertEqual(events_of(project, session_id, "probe_concluded"), [])
+
+            # A posed-but-unanswered check is still not a measurement.
+            pose(project, session_id)
+            code, out, err = conclude_probe(project, session_id)
+            self.assertEqual(code, 1)
+            self.assertIn("open", err)
+            self.assertEqual(events_of(project, session_id, "probe_concluded"), [])
+
     def test_succeeds_once_and_then_refuses(self):
         with TempProject() as project:
             session_id = project.make_session()
@@ -386,6 +494,8 @@ class ConcludeProbeTests(unittest.TestCase):
     def test_reads_strands_from_a_file_and_accepts_a_summary_in_the_document(self):
         with TempProject() as project:
             session_id = project.make_session()
+            pose(project, session_id)
+            answer(project, session_id, text="x", correct="true")
             strands = [{"strand": "counting", "assessment": "holds"}]
             path = project.path / "strands.json"
             write_json_file(path, {"strands": strands, "summary": "from the file"})
@@ -400,6 +510,8 @@ class ConcludeProbeTests(unittest.TestCase):
     def test_strand_count_is_advisory_only(self):
         with TempProject() as project:
             session_id = project.make_session()
+            pose(project, session_id)
+            answer(project, session_id, text="x", correct="true")
             strands = [
                 {"strand": "strand %d" % index, "assessment": "assessment"}
                 for index in range(_data.WARN_STRANDS + 1)
@@ -412,6 +524,8 @@ class ConcludeProbeTests(unittest.TestCase):
     def test_refuses_empty_strands(self):
         with TempProject() as project:
             session_id = project.make_session()
+            pose(project, session_id)
+            answer(project, session_id, text="x", correct="true")
             code, out, err = conclude_probe(project, session_id, strands=[])
             self.assertEqual(code, 1)
             self.assertIn("strand", err)
@@ -447,6 +561,7 @@ class PhaseTests(unittest.TestCase):
             # The first node-tagged check ends it.
             self.assertEqual(pose(project, session_id, node="a")[0], 0)
             self.assertEqual(state_json(project, session_id)["phase"], "teach")
+            self.assertEqual(answer(project, session_id, text="x", correct="true")[0], 0)
 
             self.assertEqual(run_session(project, "close", "--session", session_id)[0], 0)
             self.assertEqual(state_json(project, session_id)["phase"], "closed")
@@ -505,6 +620,34 @@ class PositionTests(unittest.TestCase):
             self.assertEqual(fields["visited"], ["a", "b", "c"])
             self.assertEqual(fields["open"]["seq"], 10)
 
+    def test_untouched_does_not_double_count_a_current_node_that_was_visited(self):
+        with TempProject() as project:
+            session_id = project.make_session()
+            append_events(
+                project,
+                session_id,
+                [
+                    {"type": "probe_concluded", "strands": [{"strand": "s", "assessment": "a"}]},
+                    {
+                        "type": "plan_set",
+                        "revision": 1,
+                        "nodes": nodes("a", "b", "c"),
+                        "edges": [{"from": "a", "to": "b"}, {"from": "b", "to": "c"}],
+                    },
+                ],
+            )
+            for node_id in ("a", "b", "a"):
+                self.assertEqual(
+                    pose(project, session_id, node=node_id, options="x,y", correct="0")[0], 0
+                )
+                self.assertEqual(answer(project, session_id, select="0")[0], 0)
+
+            fields = state_json(project, session_id)
+            self.assertEqual(fields["current"], "a")
+            self.assertEqual(fields["visited"], ["a", "b"])
+            # Three nodes, a and b seen, a is also current; c is the only untouched node.
+            self.assertEqual(fields["next"], {"untouched": 1, "total": 3})
+
 
 # --------------------------------------------------------------------------
 # step-close
@@ -518,7 +661,10 @@ class StepCloseTests(unittest.TestCase):
         append_events(
             self.project,
             self.session_id,
-            [{"type": "plan_set", "revision": 1, "nodes": nodes("a", "b"), "edges": [{"from": "a", "to": "b"}]}],
+            [
+                {"type": "probe_concluded", "strands": [{"strand": "s", "assessment": "a"}]},
+                {"type": "plan_set", "revision": 1, "nodes": nodes("a", "b"), "edges": [{"from": "a", "to": "b"}]},
+            ],
         )
 
     def tearDown(self):
@@ -531,6 +677,21 @@ class StepCloseTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("current plan", err)
         self.assertEqual(events_of(self.project, self.session_id, "step_closed"), [])
+
+    def test_refuses_before_the_probe_concludes(self):
+        with TempProject() as project:
+            session_id = project.make_session()
+            append_events(
+                project,
+                session_id,
+                [{"type": "plan_set", "revision": 1, "nodes": nodes("a"), "edges": []}],
+            )
+            code, out, err = run_session(
+                project, "step-close", "--session", session_id, "--node", "a"
+            )
+            self.assertEqual(code, 1)
+            self.assertIn("probe", err)
+            self.assertEqual(events_of(project, session_id, "step_closed"), [])
 
     def test_records_outcome_and_defaults_to_held(self):
         code, out, err = run_session(
@@ -588,6 +749,19 @@ class CloseTests(unittest.TestCase):
             self.assertIn("already closed", err)
             self.assertEqual(len(events_of(project, session_id, "session_closed")), 1)
 
+    def test_close_refuses_while_a_check_is_open_and_names_its_seq(self):
+        with TempProject() as project:
+            session_id = project.make_session()
+            self.assertEqual(pose(project, session_id)[0], 0)
+            code, out, err = run_session(project, "close", "--session", session_id)
+            self.assertEqual(code, 1)
+            self.assertIn("check 2", err)
+            self.assertIn("open", err)
+            self.assertEqual(events_of(project, session_id, "session_closed"), [])
+
+            self.assertEqual(answer(project, session_id, text="x", correct="true")[0], 0)
+            self.assertEqual(run_session(project, "close", "--session", session_id)[0], 0)
+
     def test_mutations_refuse_after_close(self):
         with TempProject() as project:
             session_id = project.make_session()
@@ -599,6 +773,69 @@ class CloseTests(unittest.TestCase):
             # Reading the record still works.
             self.assertEqual(state_json(project, session_id)["closed"], True)
             self.assertEqual(run_session(project, "render", "--session", session_id)[0], 0)
+
+
+class StartedLogTests(unittest.TestCase):
+    def test_every_mutating_command_refuses_an_empty_log(self):
+        with TempProject() as project, tempfile.TemporaryDirectory() as scratch:
+            session_id = project.make_session()
+            project.write_events(session_id, [])
+            plan_path = Path(scratch) / "plan.json"
+            write_json_file(plan_path, plan_document(("a", "b")))
+            problem_path = Path(scratch) / "problem.json"
+            write_json_file(
+                problem_path,
+                {"statement": "s", "mode": "recall", "target": ["a"], "modelSolution": "m"},
+            )
+            result_path = Path(scratch) / "result.json"
+            write_json_file(
+                result_path,
+                {"outcome": "solved", "verdict": "v", "rung": None, "missClass": None, "retest": False},
+            )
+            commands = [
+                ("check", ["--question", "q", "--key", "k"]),
+                ("answer", ["--text", "x", "--correct", "true", "--confidence", "3", "--trace", "t"]),
+                (
+                    "conclude-probe",
+                    ["--strands-json", json.dumps([{"strand": "s", "assessment": "a"}])],
+                ),
+                ("plan-set", ["--plan", str(plan_path)]),
+                ("step-close", ["--node", "a"]),
+                ("practice-problem", ["--problem", str(problem_path)]),
+                ("practice-concluded", ["--result", str(result_path)]),
+                ("close", []),
+            ]
+            for command, extra in commands:
+                with self.subTest(command=command):
+                    code, out, err = run_session(
+                        project, command, "--session", session_id, *extra
+                    )
+                    self.assertEqual(code, 1)
+                    self.assertIn("session_start", err)
+                    self.assertEqual(project.events(session_id), [])
+
+    def test_refuses_a_log_whose_first_event_is_not_session_start(self):
+        with TempProject() as project:
+            session_id = project.make_session()
+            project.write_events(
+                session_id,
+                [
+                    {
+                        "seq": 1,
+                        "at": START,
+                        "type": "answer",
+                        "check_seq": 1,
+                        "selection": ["x"],
+                        "correct": True,
+                        "confidence": 3,
+                        "trace": "t",
+                    }
+                ],
+            )
+            code, out, err = run_session(project, "close", "--session", session_id)
+            self.assertEqual(code, 1)
+            self.assertIn("session_start", err)
+            self.assertEqual(events_of(project, session_id, "session_closed"), [])
 
 
 # --------------------------------------------------------------------------
@@ -771,6 +1008,28 @@ class RenderTests(unittest.TestCase):
             self.assertIn("- **Closed:** no", text)
             self.assertNotIn("## Practice", text)
 
+    def test_no_plan_omits_the_whole_plan_section(self):
+        with TempProject() as project:
+            session_id = self._teach_session(project)
+            code, text, err = run_session(
+                project, "render", "--session", session_id, "--no-plan"
+            )
+            self.assertEqual(code, 0, err)
+            self.assertNotIn("## Plan", text)
+            self.assertNotIn("Revision 1", text)
+            self.assertNotIn("**A** (a)", text)
+            self.assertNotIn("- [x]", text)
+            for heading in ("## Probe", "## Steps", "## Session"):
+                self.assertIn(heading, text)
+
+            code, written, err = run_session(
+                project, "render", "--session", session_id, "--no-plan", "--write"
+            )
+            self.assertEqual(code, 0, err)
+            path = project.root / "sessions" / session_id / "session.md"
+            self.assertEqual(path.read_text(encoding="utf-8"), written)
+            self.assertNotIn("## Plan", path.read_text(encoding="utf-8"))
+
     def test_write_puts_session_md_beside_the_log(self):
         with TempProject() as project:
             session_id = self._teach_session(project)
@@ -851,6 +1110,34 @@ class ListTests(unittest.TestCase):
             self.assertIn("practice heat", out)
             self.assertRegex(out, r"%s\s+teach\s+probe\s+2" % teach)
             self.assertRegex(out, r"%s\s+practice\s+practice\s+0" % practice)
+            self.assertIn("START", lines[0])
+            self.assertIn(project.events(teach)[0]["at"], out)
+            self.assertIn(project.events(practice)[0]["at"], out)
+
+    def test_most_recent_first_and_json_matches(self):
+        with TempProject() as project:
+            older = project.make_session(session_id="lh_older001")
+            newer = project.make_session(session_id="lh_newer002")
+            for session_id, at in (
+                (older, "2026-01-01T00:00:00Z"),
+                (newer, "2026-02-01T00:00:00Z"),
+            ):
+                events = project.events(session_id)
+                events[0]["at"] = at
+                project.write_events(session_id, events)
+
+            code, out, err = run_session(project, "list")
+            self.assertEqual(code, 0, err)
+            self.assertLess(out.index(newer), out.index(older))
+            self.assertIn("2026-02-01T00:00:00Z", out)
+            self.assertIn("2026-01-01T00:00:00Z", out)
+
+            code, out, err = run_session(project, "list", "--format", "json")
+            self.assertEqual(code, 0, err)
+            rows = json.loads(out)
+            self.assertEqual([row["id"] for row in rows], [newer, older])
+            self.assertEqual(rows[0]["start"], "2026-02-01T00:00:00Z")
+            self.assertEqual(rows[1]["start"], "2026-01-01T00:00:00Z")
 
     def test_empty_record(self):
         with TempProject() as project:
@@ -888,6 +1175,71 @@ class PracticeTests(unittest.TestCase):
             self.assertEqual(conclusion["rung"], "R2")
             self.assertTrue(conclusion["retest"])
             self.assertEqual(state_json(project, session_id)["phase"], "practice")
+
+    def test_practice_problem_requires_a_known_mode_and_a_nonempty_target(self):
+        with TempProject() as project:
+            session_id = init(project, goal="practice", kind="practice")
+            good = {
+                "statement": "s",
+                "mode": "recall",
+                "target": ["a"],
+                "modelSolution": "m",
+            }
+            cases = [
+                (dict(good, mode="essay"), "mode"),
+                ({key: value for key, value in good.items() if key != "target"}, "target"),
+                (dict(good, target=[]), "target"),
+            ]
+            for document, needle in cases:
+                with self.subTest(document=document):
+                    code, out, err = run_practice_problem(project, session_id, document)
+                    self.assertEqual(code, 1)
+                    self.assertIn(needle, err)
+                    self.assertEqual(events_of(project, session_id, "practice_problem"), [])
+
+            for mode in ("recall", "discrimination", "composition"):
+                with self.subTest(mode=mode):
+                    code, out, err = run_practice_problem(
+                        project, session_id, dict(good, mode=mode)
+                    )
+                    self.assertEqual(code, 0, err)
+            self.assertEqual(len(events_of(project, session_id, "practice_problem")), 3)
+
+    def test_practice_concluded_requires_the_full_documented_shape(self):
+        with TempProject() as project:
+            session_id = init(project, goal="practice", kind="practice")
+            good = {
+                "outcome": "solved",
+                "verdict": "clean retrieve",
+                "rung": None,
+                "missClass": None,
+                "retest": False,
+            }
+            cases = [
+                (dict(good, outcome="won"), "outcome"),
+                ({key: value for key, value in good.items() if key != "verdict"}, "verdict"),
+                ({key: value for key, value in good.items() if key != "rung"}, "rung"),
+                ({key: value for key, value in good.items() if key != "missClass"}, "missClass"),
+                ({key: value for key, value in good.items() if key != "retest"}, "retest"),
+                (dict(good, rung="R9"), "rung"),
+                (dict(good, missClass="none"), "missClass"),
+                (dict(good, retest="yes"), "retest"),
+            ]
+            for document, needle in cases:
+                with self.subTest(document=document):
+                    code, out, err = run_practice_concluded(project, session_id, document)
+                    self.assertEqual(code, 1)
+                    self.assertIn(needle, err)
+                    self.assertEqual(events_of(project, session_id, "practice_concluded"), [])
+
+            code, out, err = run_practice_concluded(project, session_id, good)
+            self.assertEqual(code, 0, err)
+            conclusion = events_of(project, session_id, "practice_concluded")[0]
+            self.assertEqual(conclusion["outcome"], "solved")
+            self.assertEqual(conclusion["verdict"], "clean retrieve")
+            self.assertIsNone(conclusion["rung"])
+            self.assertIsNone(conclusion["missClass"])
+            self.assertIs(conclusion["retest"], False)
 
     def test_practice_commands_refuse_a_teach_session(self):
         with TempProject() as project:
@@ -947,9 +1299,22 @@ class PracticeTests(unittest.TestCase):
 
 @unittest.skipUnless(HAS_PLAN, "scripts/plan.py is not present")
 class PlanSetTests(unittest.TestCase):
+    def test_refuses_before_the_probe_concludes(self):
+        with TempProject() as project:
+            session_id = project.make_session()
+            code, out, err = set_plan(project, session_id, plan_document(("a", "b")))
+            self.assertEqual(code, 1)
+            self.assertIn("probe", err)
+            self.assertEqual(events_of(project, session_id, "plan_set"), [])
+
     def test_valid_plan_is_recorded_and_unlocks_nodes(self):
         with TempProject() as project:
             session_id = project.make_session()
+            append_events(
+                project,
+                session_id,
+                [{"type": "probe_concluded", "strands": [{"strand": "s", "assessment": "a"}]}],
+            )
             document = plan_document(("counting", "irreversible"))
             code, out, err = set_plan(project, session_id, document)
             self.assertEqual(code, 0, err)
@@ -962,6 +1327,11 @@ class PlanSetTests(unittest.TestCase):
     def test_invalid_plan_is_refused_and_not_recorded(self):
         with TempProject() as project:
             session_id = project.make_session()
+            append_events(
+                project,
+                session_id,
+                [{"type": "probe_concluded", "strands": [{"strand": "s", "assessment": "a"}]}],
+            )
             document = {"nodes": nodes("a", "b"), "edges": [{"from": "a", "to": "b"}, {"from": "b", "to": "a"}]}
             code, out, err = set_plan(project, session_id, document)
             self.assertEqual(code, 1)
@@ -971,6 +1341,11 @@ class PlanSetTests(unittest.TestCase):
     def test_revision_increments(self):
         with TempProject() as project:
             session_id = project.make_session()
+            append_events(
+                project,
+                session_id,
+                [{"type": "probe_concluded", "strands": [{"strand": "s", "assessment": "a"}]}],
+            )
             self.assertEqual(set_plan(project, session_id, plan_document(("a", "b")))[0], 0)
             self.assertEqual(set_plan(project, session_id, plan_document(("a", "b", "c")))[0], 0)
             plans = events_of(project, session_id, "plan_set")
@@ -980,6 +1355,11 @@ class PlanSetTests(unittest.TestCase):
     def test_plan_node_count_is_advisory_only(self):
         with TempProject() as project:
             session_id = project.make_session()
+            append_events(
+                project,
+                session_id,
+                [{"type": "probe_concluded", "strands": [{"strand": "s", "assessment": "a"}]}],
+            )
             many = ["n%d" % index for index in range(_data.WARN_PLAN_NODES + 1)]
             code, out, err = set_plan(project, session_id, plan_document(tuple(many), edges=[]))
             self.assertEqual(code, 0, err)
@@ -1016,12 +1396,15 @@ class CwdTests(unittest.TestCase):
 
             practice = init(project, goal="practice heat", kind="practice")
             problem = Path(scratch) / "problem.json"
-            write_json_file(problem, {"statement": "s", "mode": "recall", "target": [], "modelSolution": "m"})
+            write_json_file(problem, {"statement": "s", "mode": "recall", "target": ["a"], "modelSolution": "m"})
             self.assertEqual(
                 run_session(project, "practice-problem", "--session", practice, "--problem", str(problem))[0], 0
             )
             result = Path(scratch) / "result.json"
-            write_json_file(result, {"outcome": "solved", "verdict": "v", "rung": "R1", "missClass": "none"})
+            write_json_file(
+                result,
+                {"outcome": "solved", "verdict": "v", "rung": None, "missClass": None, "retest": False},
+            )
             self.assertEqual(
                 run_session(project, "practice-concluded", "--session", practice, "--result", str(result))[0], 0
             )

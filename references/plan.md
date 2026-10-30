@@ -11,7 +11,7 @@ the plan is not that graph.
 
 ## Entry condition
 
-1. Run `python3 scripts/session.py state --session ID`.
+1. Run `python3 <skill>/scripts/session.py state --session ID`.
 2. Confirm `phase plan` and `open none`. The phase is `probe` until `probe_concluded` exists;
    the probe is never skipped, and a plan authored without it has no measured starting point.
 3. Read the probe's strands and summary from the session log: `state` carries derived
@@ -41,8 +41,8 @@ the plan is not that graph.
 | `edges[].to` | string | yes | the node id that requires `from` |
 | `edges` | array | yes | `from` is always the prerequisite; `to` always depends on it |
 
-No other keys. Ids are lowercase slugs; they are not graph node ids (`n_…`) and never appear
-in the ledgers.
+No other keys at any level. Ids are lowercase slugs; they are not graph node ids (`n_…`) and
+never appear in the ledgers.
 
 A node carries one claim the learner can hold. If you cannot state the node's claim in one
 sentence, it is several nodes.
@@ -50,8 +50,8 @@ sentence, it is several nodes.
 ## Commit sequence
 
 1. Write the plan to a scratch file outside `.learnharness/`, for example `plan.json`.
-2. Run `python3 scripts/plan.py validate --plan plan.json`.
-3. Run `python3 scripts/session.py plan-set --session ID --plan plan.json`.
+2. Run `python3 <skill>/scripts/plan.py validate --plan plan.json`.
+3. Run `python3 <skill>/scripts/session.py plan-set --session ID --plan plan.json`.
 
 `plan-set` validates again and refuses an invalid plan. A plan that is not recorded in a
 `plan_set` event does not exist: the scratch file is not the record, and the session log is
@@ -71,6 +71,8 @@ nothing.
 | bad id | an id does not match `^[a-z0-9]+([_-][a-z0-9]+)*$` | rewrite the id as a lowercase slug |
 | duplicate id | two nodes share an id | merge them or rename one |
 | empty title | `title` is empty or missing | give the node a short label |
+| unknown key | the plan, a node, or an edge carries a key not listed above | remove it; there are no extension fields |
+| non-string summary | `summary` is present but is not a string | write it as one line of text, or omit it |
 | unknown edge endpoint | `from` or `to` names no node | add the node or fix the reference |
 | self-loop | `from` equals `to` | remove the edge |
 | duplicate edge | the same `from`/`to` pair appears twice | keep one |

@@ -16,9 +16,11 @@ authored from.
 
 A plan is refused when it has no nodes, when a node id does not match
 ``^[a-z0-9]+([_-][a-z0-9]+)*$``, when an id repeats, when a title is empty or
-whitespace-only, when an edge names an unknown node, when an edge is a
-self-loop, when two edges are identical, or when the edges contain a cycle.
-Every problem is reported, newline-joined, so one pass is enough to fix them.
+whitespace-only, when the plan, a node, or an edge carries an unknown key, when
+a node summary is present but not a string, when an edge names an unknown node,
+when an edge is a self-loop, when two edges are identical, or when the edges
+contain a cycle. Every problem is reported, newline-joined, so one pass is
+enough to fix them.
 
 Size is advisory: more than ``_data.WARN_PLAN_NODES`` nodes adds a warning to
 the success payload and never refuses.
@@ -47,6 +49,10 @@ import _data
 NODE_ID_RULE = "^[a-z0-9]+([_-][a-z0-9]+)*$"
 NODE_ID_RE = re.compile(NODE_ID_RULE)
 
+_PLAN_KEYS = frozenset(("nodes", "edges"))
+_NODE_KEYS = frozenset(("id", "title", "summary"))
+_EDGE_KEYS = frozenset(("from", "to"))
+
 # Cycles are diagnostic text, not the verdict; report enough to start fixing.
 MAX_REPORTED_CYCLES = 20
 
@@ -72,6 +78,10 @@ def validate(document):
 
     errors = []
     node_ids = []
+
+    for key in document:
+        if key not in _PLAN_KEYS:
+            errors.append("unknown top-level key %r" % (key,))
 
     node_entries = document.get("nodes")
     if node_entries is None:
@@ -139,6 +149,14 @@ def _collect_nodes(entries, errors, node_ids):
             known[node_id] = True
 
         label = "node %r" % (node_id,) if node_id is not None else "nodes[%d]" % index
+        for key in entry:
+            if key not in _NODE_KEYS:
+                errors.append("%s: unknown key %r" % (label, key))
+
+        summary = entry.get("summary")
+        if "summary" in entry and not isinstance(summary, str):
+            errors.append("%s: summary must be a string, got %s" % (label, _json_type(summary)))
+
         title = entry.get("title")
         if not isinstance(title, str):
             errors.append("%s: title must be a string, got %s" % (label, _json_type(title)))
@@ -156,6 +174,10 @@ def _collect_edges(entries, known, errors):
         if not isinstance(entry, dict):
             errors.append("edges[%d]: must be an object, got %s" % (index, _json_type(entry)))
             continue
+
+        for key in entry:
+            if key not in _EDGE_KEYS:
+                errors.append("edges[%d]: unknown key %r" % (index, key))
 
         source = entry.get("from")
         target = entry.get("to")

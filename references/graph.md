@@ -20,9 +20,13 @@ loses evidence. Write only through `graph_write.py`; it validates before it writ
 
 The close runs in a **fresh invocation whose only inputs are the session log**:
 
-1. `python3 scripts/session.py state --session ID` for the derived summary.
-2. The rendered transcript: `python3 scripts/session.py render --session ID`, or the
-   `session.md` already written by `render --write`.
+1. `python3 <skill>/scripts/session.py state --session ID` for the derived summary.
+2. The rendered transcript without the plan:
+   `python3 <skill>/scripts/session.py render --session ID --no-plan`, or the `session.md`
+   already written by `render --write --no-plan`.
+
+`--no-plan` is required here: the plan is what you intended to teach, the graph must record
+what the learner established.
 
 **Do not read the plan.** Not `plan_set` node or edge payloads in the log, not a scratch plan
 file, not a plan outline from earlier in the conversation. The `state` output's `plan` line
@@ -38,9 +42,9 @@ The test, applied to every candidate: **what line of the transcript is the evide
 only reason to believe the learner holds it is that the plan says it should have been taught,
 drop it.
 
-The log does contain `plan_set` events, and the rendered transcript may echo plan material.
-Skip it. Extract from `check_posed`, `answer`, `step_closed`, `probe_concluded`, and the
-learner's own words.
+The log does contain `plan_set` events, but the rendered transcript excludes them. A tagged
+check still names its node id; that is position evidence, not the plan. Extract from
+`check_posed`, `answer`, `step_closed`, `probe_concluded`, and the learner's own words.
 
 ## Three roles, one pass
 
@@ -99,7 +103,7 @@ Two rules the audit exists to enforce:
   did not work, a question they asked: none of these are evidence of understanding.
 
 Check the existing graph before merging, so reuse happens at the writer instead of by luck:
-`python3 scripts/graph.py propositions`, and `python3 scripts/graph.py find QUERY` for a
+`python3 <skill>/scripts/graph.py propositions`, and `python3 <skill>/scripts/graph.py find QUERY` for a
 phrasing you are unsure about. Reuse matches on `statement` or an alias.
 
 Drop rather than soften. A dropped true proposition costs one future re-teach. A written false
@@ -123,7 +127,7 @@ Proposal input uses **local refs** so you never invent global ids:
 
 1. Write the proposals to a scratch file outside `.learnharness/`, for example
    `proposals.json`.
-2. Run `python3 scripts/graph_write.py merge --session ID --proposals proposals.json`.
+2. Run `python3 <skill>/scripts/graph_write.py merge --session ID --proposals proposals.json`.
 3. Read the result: `{"ok":true,"nodes":N,"chains":M,"reused":R}`.
 
 `nodes` counts node writes, `chains` counts chain writes, `reused` counts nodes matched to an
@@ -155,7 +159,7 @@ Also not guaranteed: completeness. The graph holds what the transcript shows, no
 
 ## Verify
 
-Run `python3 scripts/verify.py` after merging. Add `--session ID` to scope the audit to this
+Run `python3 <skill>/scripts/verify.py` after merging. Add `--session ID` to scope the audit to this
 session. It exits 1 when it finds anything wrong, and it checks the whole record, not only what
 you just wrote: open checks, missing keys, bad answer references, duplicate probe conclusions,
 invalid plans, `step_closed` for a node absent from the current plan, dangling chain endpoints,
@@ -171,7 +175,7 @@ node lines missing `aliases` or `provenance`, and a `format.json` version above 
 After the merge and the verify:
 
 ```
-python3 scripts/session.py close --session ID
+python3 <skill>/scripts/session.py close --session ID
 ```
 
 This appends the terminal `session_closed` event; nothing may be written to the session after
@@ -183,15 +187,27 @@ and report them, so the report matches the graph rather than a stale plan.
 ## Export into the app
 
 ```
-python3 scripts/graph.py export --to DEST
+python3 <skill>/scripts/graph.py export --to DEST
 ```
 
 `DEST` is the destination **graph directory** — the directory that holds `nodes.jsonl` and
-`chains.jsonl` (in the app, its `data/graph` directory). You may also pass the app's data
-directory itself: if `DEST` already contains a `graph/` or `chats/` subdirectory, the
-ledgers are written into `DEST/graph`, which is the usual case.
-Export copies only those two ledgers and stamps `format.json` with version 1. It leaves every
-other file in the destination untouched.
+`chains.jsonl`. You may also pass the app's data directory: unless `DEST` already contains
+those two ledgers or is itself named `graph`, the ledgers are written into `DEST/graph`, which
+is the usual case.
+
+Export refuses rather than damages:
+
+- it refuses if the destination's `format.json` is newer than this skill understands, and
+  writes nothing;
+- it refuses if the destination already holds a non-empty `nodes.jsonl` or `chains.jsonl`,
+  naming the files, unless you pass `--replace`;
+- it refuses if the source record has no graph directory, so a wrong `--data-dir` cannot
+  stamp an unrelated destination;
+- it refuses if any source ledger line is malformed, naming `file:line` and the reason,
+  because the app would drop that line silently.
+
+Copies are staged and swapped into place, so an interrupted export cannot leave a torn file.
+It reports whether it created or replaced, and how many records it wrote.
 
 - Export is the supported route into the app. Never copy or edit the app's data files by hand.
 - Export after `verify.py` passes.

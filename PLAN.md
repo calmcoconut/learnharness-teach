@@ -385,10 +385,10 @@ property that the prober has no plan-node field at all.
 
 | # | State | Evidence |
 |---|---|---|
-| P0 | done | 145 tests green; `test_spec` and `check_stdlib_only` enforce the packaging rules |
+| P0 | done | the full suite is green; `test_spec` and `check_stdlib_only` enforce the packaging rules |
 | P1 | done | `test_session` covers the event model, derivations, refusals and CWD independence |
 | P2 | done | `references/*` ported; `tests/fixtures/golden/teach-session.md` is the walking skeleton and its commands were executed verbatim |
-| P3 | done | `plan.py` validated against an independent transitive-closure reference over 5,000 random graphs |
+| P3 | done | `plan.py` validated against the independent Warshall transitive-closure reference over 5,000 random graphs in `tests/test_plan.py` |
 | P4 | done | position derived across a multi-step session; the golden transcript exercises a `partial` step and a plan revision |
 | P5 | done | practice fixture writes no propositions; `test_fixtures` asserts it |
 | P6 | done | `graph_write.py` + `verify.py` + `graph.py export`; the committed fixture audits clean |
@@ -397,6 +397,38 @@ property that the prober has no plan-node field at all.
 P7 is the only open item, and it cannot be closed by a test: it needs a real session in each
 of the four harnesses. Until then the portability claim rests on the packaging rules and the
 docs-drift guard, not on observed behaviour.
+
+
+### Review round 1
+
+An adversarial review of the first pushed commit found 2 critical, 7 high, 12 medium and 6
+low defects. All are fixed. The ones worth remembering, because they are the class of bug
+that tests written by the author do not catch:
+
+- **The documented install was broken.** Every reference said `python3 scripts/session.py`,
+  but the install puts the skill in a skills directory, so `scripts/` is never at the project
+  root. A model following the docs literally failed on the first command. The docs guard
+  could not catch it because it only checked that the file existed somewhere in the repo.
+  Shipped commands are now written as `python3 <skill>/scripts/…` and a test fails on any
+  bare path.
+- **`export` destroyed the app's graph.** It overwrote an existing `nodes.jsonl` and
+  downgraded a version-9 `format.json` to version 1 — silent, irreversible data loss in the
+  exact command the README gives users. It also wrote nothing yet still stamped the
+  destination when the source record was missing. Export now refuses a newer destination
+  stamp, refuses a non-empty destination without `--replace`, verifies the source exists, and
+  refuses malformed source lines.
+- **The probe could be skipped entirely**, and teaching could begin before it concluded,
+  despite the probe being called non-negotiable.
+- **Practice sessions could write propositions**, defeating the reason practice is a separate
+  session kind.
+- **Advisory size limits failed the audit**, so a legitimate 9-strand probe could not close
+  or export.
+- **Concurrent appends produced duplicate `seq`** and several open checks, because the seq
+  was computed outside any lock.
+
+The suite grew from 145 to 220 tests. Every fix has a regression test, and the guards that
+mattered most — install-path and export-safety — are the two the original suite structurally
+could not see.
 
 ---
 

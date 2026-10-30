@@ -8,6 +8,7 @@ against.
 """
 
 import json
+import random
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,48 @@ def build(node_ids, edges=()):
         for node_id in node_ids
     ]
     return {"nodes": nodes, "edges": [{"from": source, "to": target} for source, target in edges]}
+
+
+def independent_acyclic(document):
+    """Acyclicity by Warshall transitive closure, sharing no code with ``plan.py``."""
+    node_ids = [node["id"] for node in document["nodes"]]
+    position = {node_id: index for index, node_id in enumerate(node_ids)}
+    reach = [[False] * len(node_ids) for _ in node_ids]
+    for edge in document["edges"]:
+        reach[position[edge["from"]]][position[edge["to"]]] = True
+    for pivot in range(len(node_ids)):
+        pivot_reaches = reach[pivot]
+        for source in range(len(node_ids)):
+            if not reach[source][pivot]:
+                continue
+            source_reaches = reach[source]
+            for target in range(len(node_ids)):
+                if pivot_reaches[target]:
+                    source_reaches[target] = True
+    return not any(reach[index][index] for index in range(len(node_ids)))
+
+
+def random_plan(rng, size, cyclic):
+    """Generate a simple DAG, or a graph guaranteed to contain a cycle."""
+    node_ids = ["n%d" % index for index in range(size)]
+    order = list(node_ids)
+    rng.shuffle(order)
+    edges = set()
+    if cyclic:
+        for index in range(size - 1):
+            edges.add((order[index], order[index + 1]))
+        edges.add((order[-1], order[0]))
+    candidates = [
+        (order[first], order[second])
+        for first in range(size)
+        for second in range(first + 1, size)
+    ]
+    rng.shuffle(candidates)
+    for edge in candidates[: rng.randrange(len(candidates) + 1)]:
+        edges.add(edge)
+    edge_list = list(edges)
+    rng.shuffle(edge_list)
+    return build(node_ids, edge_list)
 
 
 class PlanCliTest(unittest.TestCase):
@@ -177,6 +220,21 @@ class PlanCliTest(unittest.TestCase):
         document = {"nodes": [{"id": "a"}], "edges": []}
         self.assert_refused(self.validate_cli(document), "node 'a': title must be a string")
 
+    def test_unknown_top_level_key_is_refused(self):
+        document = build(["a"])
+        document["revision"] = 1
+        self.assert_refused(self.validate_cli(document), "unknown top-level key 'revision'")
+
+    def test_unknown_node_key_is_refused(self):
+        document = {"nodes": [{"id": "a", "title": "A", "weight": 1}], "edges": []}
+        self.assert_refused(self.validate_cli(document), "node 'a': unknown key 'weight'")
+
+    def test_non_string_summary_is_refused(self):
+        for summary in (1, 1.5, True, [], {}, None):
+            with self.subTest(summary=summary):
+                document = {"nodes": [{"id": "a", "title": "A", "summary": summary}], "edges": []}
+                self.assert_refused(self.validate_cli(document), "node 'a': summary must be a string")
+
     # -- refusals: edges ---------------------------------------------------
 
     def test_unknown_edge_endpoints_are_refused(self):
@@ -197,6 +255,13 @@ class PlanCliTest(unittest.TestCase):
     def test_duplicate_edge_is_refused(self):
         document = build(["a", "b"], [("a", "b"), ("a", "b")])
         self.assert_refused(self.validate_cli(document), "edge 'a' -> 'b': duplicate edge")
+
+    def test_unknown_edge_key_is_refused(self):
+        document = {
+            "nodes": build(["a", "b"])["nodes"],
+            "edges": [{"from": "a", "to": "b", "weight": 1}],
+        }
+        self.assert_refused(self.validate_cli(document), "edges[0]: unknown key 'weight'")
 
     # -- refusals: cycles --------------------------------------------------
 
@@ -387,6 +452,32 @@ class PlanApiTest(unittest.TestCase):
         self.assertIs(ok, False)
         self.assertIn("cycle:", error)
         self.assertEqual(len(node_ids), size)
+
+
+class RandomGraphAgreementTest(unittest.TestCase):
+    """P3: an independent closure oracle agrees with ``validate`` on every graph."""
+
+    def test_random_dags_and_cyclic_graphs_agree_with_independent_closure(self):
+        rng = random.Random(20260114)
+        cases = 2500
+        for cyclic in (False, True):
+            for case in range(cases):
+                document = random_plan(rng, rng.randrange(2, 13), cyclic)
+                expected = independent_acyclic(document)
+                self.assertEqual(
+                    expected,
+                    not cyclic,
+                    "generator produced the wrong shape for case %d (cyclic=%s)" % (case, cyclic),
+                )
+                ok, error, warnings, node_ids = plan.validate(document)
+                self.assertIs(
+                    ok,
+                    expected,
+                    "validate disagreed with the transitive-closure oracle on case %d (cyclic=%s): %s"
+                    % (case, cyclic, error),
+                )
+                if not expected:
+                    self.assertIn("cycle:", error)
 
 
 if __name__ == "__main__":

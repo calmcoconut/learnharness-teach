@@ -23,7 +23,7 @@ Agent loads `references/probe.md`. It does not load `teach.md` or `plan.md`.
 Records the check, then asks:
 
 ```bash
-python3 scripts/session.py check --session lh_a1b2c3d4 \
+python3 <skill>/scripts/session.py check --session lh_a1b2c3d4 \
   --question "A fair coin is flipped 100 times. Which total is more likely: 50 heads, or 60 heads? Why?" \
   --options-file opts-q1.json --correct 0 \
   --key "50 heads. More arrangements give 50 than 60, so it has more microstates. 'More likely' and 'more arrangements' are the same statement."
@@ -43,7 +43,7 @@ question: A fair coin is flipped 100 times. Which total is more likely: 50 heads
 > of it as counting arrangements.
 
 ```bash
-python3 scripts/session.py answer --session lh_a1b2c3d4 \
+python3 <skill>/scripts/session.py answer --session lh_a1b2c3d4 \
   --select 0 --confidence 4 --trace "more ways to get 50, counting arrangements"
 ```
 
@@ -58,7 +58,7 @@ python3 scripts/session.py answer --session lh_a1b2c3d4 \
 > Next: what makes a process irreversible?
 
 ```bash
-python3 scripts/session.py check --session lh_a1b2c3d4 \
+python3 <skill>/scripts/session.py check --session lh_a1b2c3d4 \
   --question "In your own words, what makes a process irreversible?" \
   --key "The reverse would need a rearrangement so improbable it never happens on any timescale we observe. 'Cannot be undone' is not the reason; improbability is."
 ```
@@ -68,7 +68,7 @@ python3 scripts/session.py check --session lh_a1b2c3d4 \
 > It can't be undone. Confidence 2. I know the word but I don't really know what makes it true.
 
 ```bash
-python3 scripts/session.py answer --session lh_a1b2c3d4 \
+python3 <skill>/scripts/session.py answer --session lh_a1b2c3d4 \
   --text "It can't be undone." --correct false --confidence 2 \
   --trace "I know the word but not what makes it true"
 ```
@@ -86,7 +86,7 @@ python3 scripts/session.py answer --session lh_a1b2c3d4 \
 > One more: what is equilibrium, to you?
 
 ```bash
-python3 scripts/session.py check --session lh_a1b2c3d4 \
+python3 <skill>/scripts/session.py check --session lh_a1b2c3d4 \
   --question "What is equilibrium, in terms of arrangements?" \
   --key "The macrostate with overwhelmingly more microstates than any other, so it is where a closed system spends essentially all its time."
 ```
@@ -96,7 +96,7 @@ python3 scripts/session.py check --session lh_a1b2c3d4 \
 > The state it settles into. Confidence 3. I think that means the most likely one but I haven't connected those.
 
 ```bash
-python3 scripts/session.py answer --session lh_a1b2c3d4 \
+python3 <skill>/scripts/session.py answer --session lh_a1b2c3d4 \
   --text "The state it settles into — I think that means the most likely one, but I have not connected those." \
   --correct true --confidence 3 --trace "settles into the most likely state, not sure why"
 ```
@@ -104,7 +104,7 @@ python3 scripts/session.py answer --session lh_a1b2c3d4 \
 **Agent** — concludes the probe. It has enough.
 
 ```bash
-python3 scripts/session.py conclude-probe --session lh_a1b2c3d4 --strands strands.json \
+python3 <skill>/scripts/session.py conclude-probe --session lh_a1b2c3d4 --strands strands.json \
   --summary "Counting is solid and can be used without scaffolding. Irreversibility is a word with no mechanism behind it. Equilibrium is half-connected to likelihood."
 ```
 
@@ -123,7 +123,7 @@ python3 scripts/session.py conclude-probe --session lh_a1b2c3d4 --strands strand
 Agent loads `references/plan.md`. Phase is still `plan` — teaching starts from here.
 
 ```bash
-python3 scripts/plan.py validate --plan plan.json
+python3 <skill>/scripts/plan.py validate --plan plan.json
 ```
 
 ```json
@@ -145,7 +145,7 @@ python3 scripts/plan.py validate --plan plan.json
 ```
 
 ```bash
-python3 scripts/session.py plan-set --session lh_a1b2c3d4 --plan plan.json
+python3 <skill>/scripts/session.py plan-set --session lh_a1b2c3d4 --plan plan.json
 ```
 
 **Agent** — renders the outline once:
@@ -187,7 +187,7 @@ Agent loads `references/teach.md`. First step: `improbability`.
 Records the check, then asks:
 
 ```bash
-python3 scripts/session.py check --session lh_a1b2c3d4 --node improbability \
+python3 <skill>/scripts/session.py check --session lh_a1b2c3d4 --node improbability \
   --question "A sugar cube dissolves. Using arrangements, why does it dissolve rather than spontaneously reassemble?" \
   --key "Dissolved has vastly more arrangements than a cube, so the reverse needs a specific arrangement out of overwhelmingly many. Not forbidden, just improbable."
 ```
@@ -199,10 +199,10 @@ python3 scripts/session.py check --session lh_a1b2c3d4 --node improbability \
 > the coin thing.
 
 ```bash
-python3 scripts/session.py answer --session lh_a1b2c3d4 \
+python3 <skill>/scripts/session.py answer --session lh_a1b2c3d4 \
   --text "There are way more ways for it to be spread out than packed in a cube, so reassembling would need one specific arrangement." \
   --correct true --confidence 4 --trace "same counting as the coin, many more spread-out arrangements"
-python3 scripts/session.py step-close --session lh_a1b2c3d4 --node improbability --outcome held
+python3 <skill>/scripts/session.py step-close --session lh_a1b2c3d4 --node improbability --outcome held
 ```
 
 ---
@@ -223,7 +223,7 @@ Next step: `direction`. **Agent**
 > statement about where the arrangements are.
 
 ```bash
-python3 scripts/session.py check --session lh_a1b2c3d4 --node direction \
+python3 <skill>/scripts/session.py check --session lh_a1b2c3d4 --node direction \
   --question "Why does the second law hold for a cup of coffee but not strictly for five molecules?" \
   --key "The number of arrangements favouring the likelier direction grows so fast with particle count that the wrong direction becomes vanishingly improbable. Five molecules is small enough to fluctuate."
 ```
@@ -235,17 +235,17 @@ python3 scripts/session.py check --session lh_a1b2c3d4 --node direction \
 > it grows so fast.
 
 ```bash
-python3 scripts/session.py answer --session lh_a1b2c3d4 \
+python3 <skill>/scripts/session.py answer --session lh_a1b2c3d4 \
   --text "With five molecules it can wander back, but with 10^23 the wrong direction never happens." \
   --correct true --confidence 3 --trace "small systems can wander back, big ones can't, not sure why it grows fast"
-python3 scripts/session.py step-close --session lh_a1b2c3d4 --node direction --outcome partial
+python3 <skill>/scripts/session.py step-close --session lh_a1b2c3d4 --node direction --outcome partial
 ```
 
 **Agent** — honest outcome: `partial`, not `held`. It does not push on to the second law,
 because the growth rate is the thing that was not held.
 
 ```bash
-python3 scripts/session.py plan-set --session lh_a1b2c3d4 --plan plan-v2.json
+python3 <skill>/scripts/session.py plan-set --session lh_a1b2c3d4 --plan plan-v2.json
 ```
 
 > I've added a step before the second law, because the reason it grows so fast is exactly the
@@ -266,14 +266,14 @@ python3 scripts/session.py plan-set --session lh_a1b2c3d4 --plan plan-v2.json
 Close runs in a **fresh invocation**. Its only input is the session log:
 
 ```bash
-python3 scripts/session.py state --session lh_a1b2c3d4
-python3 scripts/session.py render --session lh_a1b2c3d4
+python3 <skill>/scripts/session.py state --session lh_a1b2c3d4
+python3 <skill>/scripts/session.py render --session lh_a1b2c3d4
 ```
 
 It does not read `plan.json` or `plan-v2.json`.
 
 ```bash
-python3 scripts/graph_write.py merge --session lh_a1b2c3d4 --proposals proposals.json
+python3 <skill>/scripts/graph_write.py merge --session lh_a1b2c3d4 --proposals proposals.json
 ```
 
 ```json
@@ -300,7 +300,7 @@ python3 scripts/graph_write.py merge --session lh_a1b2c3d4 --proposals proposals
 ```
 
 ```bash
-python3 scripts/verify.py --session lh_a1b2c3d4
+python3 <skill>/scripts/verify.py --session lh_a1b2c3d4
 ```
 
 ```text
@@ -308,7 +308,7 @@ ok: 1 session(s) and the graph are consistent
 ```
 
 ```bash
-python3 scripts/session.py close --session lh_a1b2c3d4 --nodes-written 3 --chains-written 2
+python3 <skill>/scripts/session.py close --session lh_a1b2c3d4 --nodes-written 3 --chains-written 2
 ```
 
 **Agent**

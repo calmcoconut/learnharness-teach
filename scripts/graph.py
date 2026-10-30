@@ -3,8 +3,9 @@
 The ledgers are append-only JSONL files under ``graph/``.  This module is the
 read side: it applies the app's merge law (later lines with an existing node id
 are link-appends; chain lines merge by sorted premises and conclusion), then
-renders or filters the merged view.  ``export`` copies the two ledger files
-verbatim into the app's data directory and stamps format version 1.
+renders or filters the merged view.  ``export`` copies the two ledger files into
+an existing app data directory and stamps format version 1, after refusing to
+overwrite a newer format stamp or a non-empty destination ledger.
 """
 
 import sys
@@ -13,6 +14,7 @@ sys.dont_write_bytecode = True
 
 import argparse
 import json
+import os
 import re
 import shutil
 from pathlib import Path
@@ -246,10 +248,12 @@ def _query_matcher(query):
 def select_nodes(nodes, session=None, query=None):
     selected = nodes
     if session is not None:
+        # Birth is the first provenance point, as the app defines it.  A node that a
+        # later session merely linked or extended was not born in that session.
         selected = [
             node
             for node in selected
-            if any(point["chatId"] == session for point in node["provenance"])
+            if node["provenance"] and node["provenance"][0]["chatId"] == session
         ]
     if query is not None:
         matcher = _query_matcher(query)
@@ -360,60 +364,217 @@ def print_json(root, records):
 # export
 # ---------------------------------------------------------------------------
 
-def export_ledgers(root, destination):
-    """Copy exactly the two ledgers and stamp format version 1 in ``destination``.
+EXPORT_LEDGERS = ("nodes.jsonl", "chains.jsonl")
+MAX_EXPORT_DEFECTS = 5
 
-    ``destination`` may be either the directory the ledgers belong in, or the app's
-    data directory — the one that holds ``graph/`` and ``chats/``. Pointing at a data
-    directory is the common case and silently writing the ledgers one level too high
-    would produce a graph the app never shows, so an existing ``graph/`` or ``chats/``
-    subdirectory is treated as a data root.
+
+def _is_graph_directory(path):
+    """True when ``path`` is itself a ledger directory rather than a data directory."""
+    path = Path(path)
+    if path.name == "graph":
+        return True
+    return any((path / name).exists() for name in EXPORT_LEDGERS)
+
+
+def _resolve_export_target(destination):
+    """Apply the destination rules: a ledger directory stays, anything else is a data dir.
+
+    A destination that already holds ``nodes.jsonl`` or ``chains.jsonl`` -- or is named
+    ``graph`` -- is the ledger directory itself.  Every other destination is a data
+    directory, so its ledgers belong in ``<destination>/graph``, which is created.
     """
     target = Path(destination).expanduser()
+    if target.exists() and not target.is_dir():
+        raise _data.Refusal("export target is not a directory: %s" % target)
+    if _is_graph_directory(target):
+        return target
+    return target / "graph"
+
+
+def _read_destination_format(graph_directory):
+    """Read a destination's own format stamp with ``_data.read_format`` semantics.
+
+    ``_data.read_format`` only reads ``root/graph/format.json``, and a destination
+    ledger directory is not always named ``graph``, so the numeric comparison and the
+    refusal for a newer version are mirrored here rather than skipped.
+    """
+    path = Path(graph_directory) / "format.json"
+    try:
+        value = _data.read_json(path, default=None)
+    except (ValueError, OSError, UnicodeError):
+        return _data.FORMAT_VERSION
+    if not isinstance(value, dict):
+        return _data.FORMAT_VERSION
+    version = value.get("version", _data.FORMAT_VERSION)
+    if isinstance(version, bool) or not isinstance(version, (int, float)):
+        return _data.FORMAT_VERSION
+    if version != version or version in (float("inf"), float("-inf")):
+        return _data.FORMAT_VERSION
+    if version > _data.FORMAT_VERSION:
+        raise _data.Refusal(
+            "graph format %s is newer than this skill understands (%s); refusing to touch it"
+            % (version, _data.FORMAT_VERSION)
+        )
+    return version
+
+
+def _is_non_empty_file(path):
+    path = Path(path)
+    try:
+        return path.exists() and path.stat().st_size > 0
+    except OSError:
+        return True
+
+
+def _scan_source_ledger(path):
+    """Read one source ledger, keeping each record's line number.
+
+    Unlike the read side, export cannot skip bad lines: copying them hands the app lines
+    it drops silently.  Every defect is collected with the line that carries it.
+    """
+    path = Path(path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return [], []
+    except (OSError, UnicodeError) as exc:
+        return [], ["%s: unreadable (%s)" % (path.name, exc)]
+
+    records = []
+    defects = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line, parse_constant=_reject_constant)
+        except ValueError as exc:
+            defects.append("%s:%d malformed json (%s)" % (path.name, number, exc))
+            continue
+        if not isinstance(value, dict):
+            defects.append("%s:%d not a json object" % (path.name, number))
+            continue
+        records.append((number, value))
+    return records, defects
+
+
+def _inspect_source_ledgers(graph_directory):
+    """Return ``(defects, node_count, chain_count)`` for the source ledgers.
+
+    The shapes are the ones ``verify.py`` checks, plus exact line numbers: a bad id, an
+    empty statement, a missing ``aliases``/``provenance`` array, empty premises, or a
+    chain endpoint that does not resolve in the merged node id set.
+    """
+    graph_directory = Path(graph_directory)
+    node_records, defects = _scan_source_ledger(graph_directory / "nodes.jsonl")
+    node_ids = set()
+    for number, record in node_records:
+        node_id = record.get("id")
+        if not isinstance(node_id, str) or not _data.NODE_ID_RE.match(node_id):
+            defects.append("nodes.jsonl:%d bad node id %r" % (number, node_id))
+            continue
+        node_ids.add(node_id)
+        statement = record.get("statement")
+        if not isinstance(statement, str) or not statement.strip():
+            defects.append("nodes.jsonl:%d (%s) empty statement" % (number, node_id))
+        if not isinstance(record.get("aliases"), list):
+            defects.append("nodes.jsonl:%d (%s) missing aliases array" % (number, node_id))
+        if not isinstance(record.get("provenance"), list):
+            defects.append("nodes.jsonl:%d (%s) missing provenance array" % (number, node_id))
+
+    chain_records, chain_defects = _scan_source_ledger(graph_directory / "chains.jsonl")
+    defects.extend(chain_defects)
+    for number, record in chain_records:
+        chain_id = record.get("id")
+        if not isinstance(chain_id, str) or not _data.CHAIN_ID_RE.match(chain_id):
+            defects.append("chains.jsonl:%d bad chain id %r" % (number, chain_id))
+        premises = record.get("premises")
+        if not isinstance(premises, list) or not premises:
+            defects.append("chains.jsonl:%d empty premises" % number)
+            continue
+        for endpoint in [*premises, record.get("conclusion")]:
+            if endpoint not in node_ids:
+                defects.append(
+                    "chains.jsonl:%d (%s) endpoint %r does not resolve" % (number, chain_id, endpoint)
+                )
+    return defects, len(node_records), len(chain_records)
+
+
+def _copy_ledger(source, destination_file):
+    """Copy one ledger into place atomically, or create an empty one when absent."""
+    source = Path(source)
+    destination_file = Path(destination_file)
+    if source.exists():
+        if destination_file.exists() and destination_file.resolve() == source.resolve():
+            return
+        temporary = destination_file.with_name(destination_file.name + ".tmp")
+        try:
+            shutil.copyfile(source, temporary)
+            os.replace(temporary, destination_file)
+        except OSError as exc:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+            raise _data.Refusal("cannot export %s: %s" % (source.name, exc))
+        return
+    try:
+        destination_file.write_text("", encoding="utf-8")
+    except OSError as exc:
+        raise _data.Refusal("cannot export %s: %s" % (source.name, exc))
+
+
+def export_ledgers(root, destination, replace=False):
+    """Copy the two ledgers into a destination, refusing to destroy what is already there.
+
+    Every refusal happens before anything is written: the source graph must exist and
+    contain only lines the app would keep, and a destination holding a newer format
+    stamp or a non-empty ledger is refused unless ``replace`` is set.
+    """
+    target = _resolve_export_target(destination)
+
+    source_graph = _data.graph_dir(root)
+    if not source_graph.is_dir():
+        raise _data.Refusal("no graph to export: %s does not exist; check --data-dir" % source_graph)
+
+    _read_destination_format(target)
+
+    conflicts = [name for name in EXPORT_LEDGERS if _is_non_empty_file(target / name)]
+    if conflicts and not replace:
+        raise _data.Refusal(
+            "destination %s already has non-empty %s; pass --replace to overwrite"
+            % (target, " and ".join(conflicts))
+        )
+
+    defects, node_count, chain_count = _inspect_source_ledgers(source_graph)
+    if defects:
+        shown = defects[:MAX_EXPORT_DEFECTS]
+        if len(defects) > len(shown):
+            shown.append("... and %d more" % (len(defects) - len(shown)))
+        raise _data.Refusal(
+            "refusing to export source lines the app would drop: %s" % "; ".join(shown)
+        )
+
     try:
         target.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise _data.Refusal("cannot create export directory %s: %s" % (target, exc))
-
     if not target.is_dir():
         raise _data.Refusal("export target is not a directory: %s" % target)
 
-    for marker in ("graph", "chats"):
-        candidate = target / marker
-        if candidate.is_dir():
-            target = candidate
-            break
+    for name in EXPORT_LEDGERS:
+        _copy_ledger(source_graph / name, target / name)
 
-    if not target.is_dir():
-        raise _data.Refusal("export target is not a directory: %s" % target)
-
-    counts = {}
-    for name in ("nodes.jsonl", "chains.jsonl"):
-        source = _data.graph_dir(root) / name
-        destination_file = target / name
-        try:
-            if source.exists() and source.resolve() != destination_file.resolve():
-                shutil.copyfile(source, destination_file)
-            elif not source.exists() and not destination_file.exists():
-                destination_file.write_text("", encoding="utf-8")
-        except OSError as exc:
-            raise _data.Refusal("cannot export %s: %s" % (name, exc))
-        records, _problems = _data.read_jsonl(source)
-        counts[name] = len(records)
-
-    # Direct write: export must not touch any other file already in the target.
+    # Only the stamp is added beside the ledgers; every other file is left untouched.
     try:
-        (target / "format.json").write_text(
-            json.dumps({"version": _data.FORMAT_VERSION}, indent="\t") + "\n",
-            encoding="utf-8",
-        )
+        _data.write_json(target / "format.json", {"version": _data.FORMAT_VERSION})
     except OSError as exc:
         raise _data.Refusal("cannot write export format stamp: %s" % exc)
 
     return {
         "to": str(target),
-        "nodes": counts["nodes.jsonl"],
-        "chains": counts["chains.jsonl"],
+        "action": "replaced" if conflicts else "created",
+        "nodes": node_count,
+        "chains": chain_count,
     }
 
 
@@ -448,13 +609,21 @@ def build_parser():
         "export",
         help="copy the two ledgers and a format stamp into a destination directory",
         description=(
-            "Copy nodes.jsonl and chains.jsonl into DEST and stamp format version 1. DEST may "
-            "be the graph directory itself, or the app's data directory: if DEST already "
-            "contains a graph/ or chats/ subdirectory, the ledgers are written into DEST/graph. "
-            "No other file in DEST is read, rewritten or removed."
+            "Copy nodes.jsonl and chains.jsonl into DEST and stamp format version 1. If DEST "
+            "already contains nodes.jsonl or chains.jsonl, or DEST is named 'graph', the "
+            "ledgers are written into DEST itself; any other DEST is treated as the app's "
+            "data directory and its ledgers belong in DEST/graph, which is created. Export "
+            "refuses when DEST holds a newer format stamp or non-empty ledgers (pass "
+            "--replace to overwrite) and when the source ledgers hold lines the app would "
+            "drop. No other file in DEST is read, rewritten or removed."
         ),
     )
     export.add_argument("--to", metavar="PATH", required=True)
+    export.add_argument(
+        "--replace",
+        action="store_true",
+        help="overwrite destination ledgers that already contain records",
+    )
 
     return parser
 
@@ -466,7 +635,7 @@ def main(argv=None):
 
     if args.command == "export":
         _data.read_format(root)
-        result = export_ledgers(root, args.to)
+        result = export_ledgers(root, args.to, replace=args.replace)
         if args.format == "json":
             _data.print_json({"ok": True, "data_dir": str(root), "records": [result]})
         else:
@@ -474,6 +643,14 @@ def main(argv=None):
             print()
             print("Data directory: %s" % root)
             print("Exported to: %s" % result["to"])
+            print(
+                "Action: %s"
+                % (
+                    "replaced existing ledger files"
+                    if result["action"] == "replaced"
+                    else "created new ledger files"
+                )
+            )
             print("Nodes: %d" % result["nodes"])
             print("Chains: %d" % result["chains"])
         return 0

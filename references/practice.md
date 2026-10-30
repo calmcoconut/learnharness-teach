@@ -6,7 +6,7 @@ learner already holds. It does not establish new ones.
 ## The session kind
 
 ```
-python3 scripts/session.py init --goal TEXT --kind practice
+python3 <skill>/scripts/session.py init --goal TEXT --kind practice
 ```
 
 - A practice session **writes no propositions**. It records `practice_problem` and
@@ -27,15 +27,15 @@ python3 scripts/session.py init --goal TEXT --kind practice
 
 | command | use |
 |---|---|
-| `python3 scripts/graph.py propositions` | the propositions available to target |
-| `python3 scripts/graph.py chains --node ID` | chains containing a node — the material for composition problems |
-| `python3 scripts/graph.py find QUERY` | substring search; `*` is the only wildcard |
-| `python3 scripts/graph.py sessions` | which sessions contributed what, when you need the birth context |
+| `python3 <skill>/scripts/graph.py propositions` | the propositions available to target |
+| `python3 <skill>/scripts/graph.py chains --node ID` | chains containing a node — the material for composition problems |
+| `python3 <skill>/scripts/graph.py find QUERY` | substring search; `*` is the only wildcard |
+| `python3 <skill>/scripts/graph.py sessions` | which sessions contributed what, when you need the birth context |
 
 **Fallback when the graph is empty: the most recent session's plan.**
 
-1. `python3 scripts/session.py list` — find the most recent teach session.
-2. Read its plan: `python3 scripts/session.py render --session ID` (or the `session.md`
+1. `python3 <skill>/scripts/session.py list` — find the most recent teach session.
+2. Read its plan: `python3 <skill>/scripts/session.py render --session ID` (or the `session.md`
    already written), or read the latest `plan_set` event in the session log.
 3. Use the plan's node ids and titles as targets, and its edges as the chain structure.
 
@@ -93,7 +93,7 @@ answer.
 2. Record it, then show the statement:
 
 ```
-python3 scripts/session.py practice-problem --session ID --problem problem.json
+python3 <skill>/scripts/session.py practice-problem --session ID --problem problem.json
 ```
 
 - `statement` is self-contained, exactly as the learner will see it (treat the displayed text as
@@ -162,7 +162,7 @@ Write the result to a file and record it:
 ```
 
 ```
-python3 scripts/session.py practice-concluded --session ID --result result.json
+python3 <skill>/scripts/session.py practice-concluded --session ID --result result.json
 ```
 
 All five fields are required. `rung` and `missClass` are nullable: pass `null` when nothing

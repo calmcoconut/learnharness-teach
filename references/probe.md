@@ -8,7 +8,7 @@ Read `references/methodology.md` once for the theory behind this phase. It is no
 to run the probe.
 
 On entry, the session is initialized and you have its id. If you are resuming, run
-`python3 scripts/session.py state --session <session-id>` only to confirm the phase and to
+`python3 <skill>/scripts/session.py state --session <session-id>` only to confirm the phase and to
 find an open check; ignore every plan field it prints. If the phase is not `probe`, stop and
 load the reference for the actual phase.
 
@@ -156,7 +156,7 @@ Record the question and its key first. Only after the command succeeds do you sh
 question to the learner.
 
 ```bash
-python3 scripts/session.py check --session <session-id> \
+python3 <skill>/scripts/session.py check --session <session-id> \
   --question "..." \
   --options "..." \
   --correct 0 \
@@ -196,7 +196,7 @@ audited.
 ## 8. Record the answer
 
 ```bash
-python3 scripts/session.py answer --session <session-id> \
+python3 <skill>/scripts/session.py answer --session <session-id> \
   --select 0 --confidence 4 --trace "..."
 ```
 
@@ -288,7 +288,7 @@ The schema has only `strand` and `assessment`, so pack those into the assessment
 Run the conclusion:
 
 ```bash
-python3 scripts/session.py conclude-probe --session <session-id> \
+python3 <skill>/scripts/session.py conclude-probe --session <session-id> \
   --strands <file> --summary "..."
 ```
 

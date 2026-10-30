@@ -59,7 +59,7 @@ score a criterion you cannot point at.
 | T3 | The step follows predict → explain → check | the explanation arrives with no elicitation |
 | T4 | The explanation makes the step feel obvious from something already held, rather than asserting it | the step is justified by appeal to authority or by "it follows from the maths" |
 | T5 | A failed check is repaired as a smaller step with its own check, never re-asked identically | the same question is posed again |
-| T6 | A failed check moves no position | `step-close --outcome held` is recorded for a step the learner did not get |
+| T6 | A failed check leaves the node current for repair and never advances to the next node | `step-close --outcome held` is recorded for a step the learner did not get, or position moves past the failed node |
 | T7 | A broken prerequisite triggers a `plan-set` revision rather than pushing on | the agent continues past a revealed gap |
 | T8 | Steps are closed with an honest outcome | every step is `held` |
 

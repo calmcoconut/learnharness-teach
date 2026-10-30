@@ -53,6 +53,24 @@ from _data import (
     sessions_dir,
 )
 
+PRACTICE_MODES = ("recall", "discrimination", "composition")
+PRACTICE_OUTCOMES = ("solved", "solvedWithHints", "movedOn", "surrendered", "dismissed")
+PRACTICE_MISS_CLASSES = ("cue", "discrimination", "execution", "careless", "structural")
+PRACTICE_RUNGS = ("R0", "R1", "R2", "R3", "R4", "R5")
+
+MUTATING_COMMANDS = frozenset(
+    (
+        "check",
+        "answer",
+        "conclude-probe",
+        "plan-set",
+        "step-close",
+        "practice-problem",
+        "practice-concluded",
+        "close",
+    )
+)
+
 
 # --------------------------------------------------------------------------
 # derivations (PLAN.md 4.3) — never stored, always replayed
@@ -303,8 +321,11 @@ def _state_fields(session_id, events):
         if plan is None
         else
         {
-            # A node is untouched when it is neither behind us nor the one in progress.
-            "untouched": max(node_count - len(visited) - (1 if _current_node(events) else 0), 0),
+            # A node is untouched when it is neither visited nor the one in progress.
+            "untouched": max(
+                node_count - len(set(visited) | ({_current_node(events)} if _current_node(events) else set())),
+                0,
+            ),
             "total": node_count,
         },
     }
@@ -447,7 +468,7 @@ def _join_markdown(lines):
     return "\n".join(out) + "\n"
 
 
-def _render_markdown(session_id, events):
+def _render_markdown(session_id, events, no_plan=False):
     start = _start_event(events)
     kind = _kind(events)
     goal = _one_line(start.get("goal")) or session_id
@@ -479,24 +500,25 @@ def _render_markdown(session_id, events):
     lines.append("")
 
     # -- Plan -------------------------------------------------------------
-    lines += ["## Plan", ""]
-    plan = _plan_event(events)
-    if plan is None:
-        lines.append("_No plan set._")
-    else:
-        nodes = plan.get("nodes") or []
-        edges = plan.get("edges") or []
-        lines.append(
-            "Revision %s \u2014 %d nodes, %d edges."
-            % (plan.get("revision", 1), len(nodes), len(edges))
-        )
-        lines.append("")
-        outline = _outline_lines(plan, _visited_nodes(events), _current_node(events))
-        if outline:
-            lines.extend(outline)
+    if not no_plan:
+        lines += ["## Plan", ""]
+        plan = _plan_event(events)
+        if plan is None:
+            lines.append("_No plan set._")
         else:
-            lines.append("_The plan has no nodes._")
-    lines.append("")
+            nodes = plan.get("nodes") or []
+            edges = plan.get("edges") or []
+            lines.append(
+                "Revision %s \u2014 %d nodes, %d edges."
+                % (plan.get("revision", 1), len(nodes), len(edges))
+            )
+            lines.append("")
+            outline = _outline_lines(plan, _visited_nodes(events), _current_node(events))
+            if outline:
+                lines.extend(outline)
+            else:
+                lines.append("_The plan has no nodes._")
+        lines.append("")
 
     # -- Steps ------------------------------------------------------------
     lines += ["## Steps", ""]
@@ -713,8 +735,24 @@ def _load_plan_module():
 # --------------------------------------------------------------------------
 
 
+def _require_started(events, session_id):
+    """Every mutating command needs a log whose first event is session_start."""
+    starts = _typed(events, "session_start")
+    if (
+        not events
+        or events[0].get("type") != "session_start"
+        or events[0].get("seq") != 1
+        or len(starts) != 1
+    ):
+        raise Refusal(
+            "session %s does not begin with exactly one session_start event; refusing to write"
+            % session_id
+        )
+    return events
+
+
 def _mutable_events(root, session_id):
-    events = require_session(root, session_id)
+    events = _require_started(require_session(root, session_id), session_id)
     if _closed_event(events) is not None:
         raise Refusal("session %s is already closed; the log is terminal" % session_id)
     return events
@@ -760,6 +798,10 @@ def cmd_check(root, args):
         raise Refusal("check needs a non-empty --question")
 
     node = args.node
+    if node is not None and _probe_event(events) is None:
+        raise Refusal(
+            "cannot pose a node-tagged check before the probe concludes; record conclude-probe first"
+        )
     if node is not None and node not in _plan_node_ids(events):
         raise Refusal("--node %r is not in the current plan" % node)
 
@@ -900,6 +942,16 @@ def cmd_conclude_probe(root, args):
         )
     if _probe_event(events) is not None:
         raise Refusal("the probe is already concluded; it is recorded at most once")
+    measured = {
+        answer.get("check_seq")
+        for answer in _answers(events)
+        if _check_by_seq(events, answer.get("check_seq")) is not None
+    }
+    if not measured:
+        raise Refusal(
+            "cannot conclude the probe before at least one check has been answered; "
+            "the probe must measure something"
+        )
 
     if args.strands is not None and args.strands_json is not None:
         raise Refusal("give either --strands or --strands-json, not both")
@@ -932,6 +984,10 @@ def cmd_conclude_probe(root, args):
 
 def cmd_plan_set(root, args):
     events = _mutable_events(root, args.session)
+    if _probe_event(events) is None:
+        raise Refusal(
+            "cannot set a plan before the probe concludes; record conclude-probe first"
+        )
 
     document = _read_json_source(args.plan, "--plan")
     if not isinstance(document, dict):
@@ -976,6 +1032,10 @@ def cmd_plan_set(root, args):
 
 def cmd_step_close(root, args):
     events = _mutable_events(root, args.session)
+    if _probe_event(events) is None:
+        raise Refusal(
+            "cannot close a teaching step before the probe concludes; record conclude-probe first"
+        )
 
     if args.node not in _plan_node_ids(events):
         raise Refusal("--node %r is not in the current plan" % args.node)
@@ -1007,8 +1067,15 @@ def cmd_practice_problem(root, args):
 
     statement = _required_text(document, "statement", "practice-problem")
     mode = _required_text(document, "mode", "practice-problem")
+    if mode not in PRACTICE_MODES:
+        raise Refusal(
+            "practice-problem: 'mode' must be one of %s, got %r"
+            % (", ".join(PRACTICE_MODES), mode)
+        )
     model_solution = _required_text(document, "modelSolution", "practice-problem")
     targets = _string_list(document.get("target"), "practice-problem target")
+    if not targets:
+        raise Refusal("practice-problem needs a non-empty 'target' list")
 
     append_event(
         root,
@@ -1034,19 +1101,48 @@ def cmd_practice_concluded(root, args):
         raise Refusal("--result must contain a json object")
 
     outcome = _required_text(document, "outcome", "practice-concluded")
-    event = {"type": "practice_concluded", "outcome": outcome}
-    for key in ("verdict", "rung", "missClass"):
-        value = document.get(key)
-        if value is None:
-            continue
-        if not isinstance(value, str) or not value.strip():
-            raise Refusal("practice-concluded: %r must be a non-empty string" % key)
-        event[key] = value.strip()
+    if outcome not in PRACTICE_OUTCOMES:
+        raise Refusal(
+            "practice-concluded: 'outcome' must be one of %s, got %r"
+            % (", ".join(PRACTICE_OUTCOMES), outcome)
+        )
+    verdict = _required_text(document, "verdict", "practice-concluded")
+
+    if "rung" not in document:
+        raise Refusal("practice-concluded requires 'rung' (use null when no hint was needed)")
+    rung = document.get("rung")
+    if rung is not None:
+        if not isinstance(rung, str) or rung.strip() not in PRACTICE_RUNGS:
+            raise Refusal(
+                "practice-concluded: 'rung' must be one of R0-R5 or null, got %r" % (rung,)
+            )
+        rung = rung.strip()
+
+    if "missClass" not in document:
+        raise Refusal("practice-concluded requires 'missClass' (use null when there was no miss)")
+    miss_class = document.get("missClass")
+    if miss_class is not None:
+        if not isinstance(miss_class, str) or miss_class.strip() not in PRACTICE_MISS_CLASSES:
+            raise Refusal(
+                "practice-concluded: 'missClass' must be one of %s or null, got %r"
+                % (", ".join(PRACTICE_MISS_CLASSES), miss_class)
+            )
+        miss_class = miss_class.strip()
+
+    if "retest" not in document:
+        raise Refusal("practice-concluded requires 'retest' as true or false")
     retest = document.get("retest")
-    if retest is not None:
-        if not isinstance(retest, bool):
-            raise Refusal("practice-concluded: 'retest' must be true or false")
-        event["retest"] = retest
+    if not isinstance(retest, bool):
+        raise Refusal("practice-concluded: 'retest' must be true or false")
+
+    event = {
+        "type": "practice_concluded",
+        "outcome": outcome,
+        "verdict": verdict,
+        "rung": rung,
+        "missClass": miss_class,
+        "retest": retest,
+    }
 
     work = document.get("work")
     if work is not None:
@@ -1059,9 +1155,15 @@ def cmd_practice_concluded(root, args):
 
 
 def cmd_close(root, args):
-    events = require_session(root, args.session)
+    events = _require_started(require_session(root, args.session), args.session)
     if _closed_event(events) is not None:
         raise Refusal("session %s is already closed" % args.session)
+    open_check = _open_check(events)
+    if open_check is not None:
+        raise Refusal(
+            "cannot close session %s while check %s is open; answer it first"
+            % (args.session, open_check.get("seq"))
+        )
 
     event = {"type": "session_closed"}
     for name in ("nodes_written", "chains_written"):
@@ -1093,7 +1195,7 @@ def cmd_state(root, args):
 
 def cmd_render(root, args):
     events = require_session(root, args.session)
-    text = _render_markdown(args.session, events)
+    text = _render_markdown(args.session, events, no_plan=args.no_plan)
     if args.write:
         session_markdown(root, args.session).write_text(text, encoding="utf-8")
     sys.stdout.write(text)
@@ -1112,22 +1214,33 @@ def cmd_list(root, args):
         nodes = plan.get("nodes") if plan is not None else None
         node_count = len(nodes) if isinstance(nodes, list) else 0
         rows.append(
-            (
-                session_id,
-                start.get("kind") or "-",
-                _phase(events),
-                node_count,
-                _clip(start.get("goal"), 120),
-            )
+            {
+                "id": session_id,
+                "kind": start.get("kind") or "-",
+                "phase": _phase(events),
+                "nodes": node_count,
+                "start": start.get("at") or "",
+                "goal": _clip(start.get("goal"), 120),
+            }
         )
+
+    # ISO-8601 UTC timestamps sort lexicographically; reverse puts the newest first.
+    rows.sort(key=lambda row: row["start"], reverse=True)
+
+    if args.format == "json":
+        print_json(rows)
+        return
 
     if not rows:
         sys.stdout.write("no sessions\n")
         return
 
-    lines = ["%-14s %-9s %-9s %5s  %s" % ("ID", "KIND", "PHASE", "NODES", "GOAL")]
+    lines = ["%-14s %-9s %-9s %5s  %-20s  %s" % ("ID", "KIND", "PHASE", "NODES", "START", "GOAL")]
     for row in rows:
-        lines.append("%-14s %-9s %-9s %5d  %s" % row)
+        lines.append(
+            "%-14s %-9s %-9s %5d  %-20s  %s"
+            % (row["id"], row["kind"], row["phase"], row["nodes"], row["start"], row["goal"])
+        )
     sys.stdout.write("\n".join(lines) + "\n")
 
 
@@ -1234,9 +1347,17 @@ def _build_parser():
     render_parser = subparsers.add_parser("render", help="emit session.md")
     render_parser.add_argument("--session", required=True, metavar="ID")
     render_parser.add_argument("--write", action="store_true", help="also write session.md")
+    render_parser.add_argument(
+        "--no-plan",
+        action="store_true",
+        help="omit the plan section (for the tree-blind close transcript)",
+    )
     render_parser.set_defaults(func=cmd_render)
 
     list_parser = subparsers.add_parser("list", help="list sessions")
+    list_parser.add_argument(
+        "--format", choices=("text", "json"), default=argparse.SUPPRESS
+    )
     list_parser.set_defaults(func=cmd_list)
 
     return parser
@@ -1245,6 +1366,16 @@ def _build_parser():
 def main(argv=None):
     args = _build_parser().parse_args(argv)
     root = find_root(args.data_dir)
+    session_id = getattr(args, "session", None)
+    command = getattr(args, "command", None)
+    if command in MUTATING_COMMANDS and session_id and session_dir(root, session_id).is_dir():
+        # The append lock alone serialises seq assignment, but not the read that decides
+        # whether a check is already open. Hold a command lock across read and append so
+        # parallel invocations cannot both pass that check.
+        lock_path = Path(str(_data.session_log(root, session_id)) + ".command")
+        with _data._file_lock(lock_path):
+            args.func(root, args)
+        return
     args.func(root, args)
 
 

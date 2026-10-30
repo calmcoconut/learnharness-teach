@@ -103,7 +103,8 @@ record to travel with the project.
 
 `session.md` is generated — read it, don't edit it. `session.jsonl` is append-only and is
 what phase and position are derived from. There is no done-ledger: a step is complete when
-a check for it happened, and a failed check moves nothing.
+a check for it happened. A failed check leaves that node current so you repair it, and never
+advances to the next node.
 
 The full contract is in [`references/data-format.md`](references/data-format.md).
 
@@ -115,12 +116,16 @@ The graph format is byte-compatible with the [LearnHarness](https://learnharness
 desktop app, so a graph built in your terminal can be viewed there:
 
 ```bash
-python3 scripts/graph.py export --to "$HOME/Library/Application Support/LearnHarness/data"
+python3 <skill>/scripts/graph.py export --to "$HOME/Library/Application Support/LearnHarness/data"
 ```
 
-It copies only `nodes.jsonl` and `chains.jsonl` and writes a format stamp. It never
-deletes or rewrites the app's other files. Point `--to` at your platform's data directory;
-on Linux and Windows see the app's documentation for the exact path.
+It copies only `nodes.jsonl` and `chains.jsonl` and writes a format stamp. Point `--to` at your
+platform's data directory; on Linux and Windows see the app's documentation for the exact path.
+
+**It will not overwrite a graph you already have.** If the destination already holds ledgers,
+export refuses and names the files; pass `--replace` once you have decided to replace them. It
+also refuses if the destination's format stamp is newer than this skill understands, so a
+newer app's data is never downgraded. Nothing is written before those checks pass.
 
 Skill sessions are *not* app chats. The app's `sessions.jsonl` and `coverage.jsonl`
 bookkeeping is deliberately not written, because these sessions have no chat to fold.
@@ -154,6 +159,7 @@ are told. Treat the skill as you would any other tool you install.
 ```bash
 python3 -m unittest discover -s tests -v   # the full suite
 python3 tests/check_stdlib_only.py         # the zero-dependency guarantee
+python3 -m unittest tests.test_session -v  # needs PYTHONPATH=tests for a single module
 ```
 
 The shipped scripts import the standard library only and parse under Python 3.10; the test

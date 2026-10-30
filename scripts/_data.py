@@ -22,7 +22,18 @@ import os
 import re
 import secrets
 from datetime import datetime, timezone
+from contextlib import contextmanager
 from pathlib import Path
+
+try:  # POSIX
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - Windows
+    _fcntl = None
+
+try:  # Windows
+    import msvcrt as _msvcrt
+except ImportError:  # pragma: no cover - POSIX
+    _msvcrt = None
 
 DATA_DIRNAME = ".learnharness"
 FORMAT_VERSION = 1
@@ -210,7 +221,11 @@ def read_format(root):
     if not isinstance(value, dict):
         return FORMAT_VERSION
     version = value.get("version", FORMAT_VERSION)
-    if not isinstance(version, int) or isinstance(version, bool):
+    # The app compares numerically, so JSON `2.0` is version 2 and is refused there.
+    # Treat any finite number the same way rather than silently falling back to v1.
+    if isinstance(version, bool) or not isinstance(version, (int, float)):
+        return FORMAT_VERSION
+    if version != version or version in (float("inf"), float("-inf")):
         return FORMAT_VERSION
     if version > FORMAT_VERSION:
         raise Refusal(
@@ -234,23 +249,71 @@ def ensure_format(root):
 # --------------------------------------------------------------------------
 
 
+@contextmanager
+def _file_lock(path):
+    """A best-effort exclusive lock on ``path``.
+
+    Uses ``flock`` where available and ``msvcrt.locking`` on Windows. If neither is
+    importable the append still happens, unserialised, rather than failing the command.
+    """
+    lock_path = Path(str(path) + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+")
+    try:
+        if _fcntl is not None:
+            _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX)
+        elif _msvcrt is not None:
+            handle.seek(0)
+            _msvcrt.locking(handle.fileno(), _msvcrt.LK_LOCK, 1)
+        yield
+    finally:
+        try:
+            if _fcntl is not None:
+                _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+            elif _msvcrt is not None:
+                handle.seek(0)
+                _msvcrt.locking(handle.fileno(), _msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        handle.close()
+
+
 def load_events(root, session_id):
+    """Read and shape-check a session log.
+
+    A syntactically valid log with the wrong shape used to pass through and crash later
+    inside a command, so every event is checked here instead.
+    """
     records, problems = read_jsonl(session_log(root, session_id))
     if problems:
         raise Refusal("session log is damaged: " + "; ".join(problems[:3]))
+    for index, record in enumerate(records, start=1):
+        seq = record.get("seq")
+        if isinstance(seq, bool) or not isinstance(seq, int):
+            raise Refusal("session log is damaged: event %d has no integer seq" % index)
+        if not isinstance(record.get("type"), str) or not record.get("type"):
+            raise Refusal("session log is damaged: event %d has no type" % index)
+        if not isinstance(record.get("at"), str) or not record.get("at"):
+            raise Refusal("session log is damaged: event %d has no timestamp" % index)
     return records
 
-
 def append_event(root, session_id, event):
-    events = load_events(root, session_id)
-    event = dict(event)
-    event["seq"] = (events[-1]["seq"] + 1) if events else 1
-    event["at"] = now_iso()
-    ordered = {"seq": event.pop("seq"), "at": event.pop("at")}
-    ordered.update(event)
-    append_jsonl(session_log(root, session_id), ordered)
-    return ordered
+    """Append one event, computing its seq under an exclusive lock.
 
+    Agents issue parallel tool calls, and load-then-append without a lock lets two
+    processes pick the same seq. That corrupts the canonical log and breaks the
+    one-open-check invariant, so the read and the write happen under one lock.
+    """
+    path = session_log(root, session_id)
+    with _file_lock(path):
+        events = load_events(root, session_id)
+        event = dict(event)
+        event["seq"] = (events[-1]["seq"] + 1) if events else 1
+        event["at"] = now_iso()
+        ordered = {"seq": event.pop("seq"), "at": event.pop("at")}
+        ordered.update(event)
+        append_jsonl(path, ordered)
+        return ordered
 
 def require_session(root, session_id):
     if not session_dir(root, session_id).is_dir():

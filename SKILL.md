@@ -60,11 +60,21 @@ python3 <skill>/scripts/session.py check --session <id> \
   --question "…" --key "…" [--options "a,b,c"] [--correct 0]
 ```
 
-Then record the learner's answer with their confidence and their reasoning:
+Then record the learner's answer with their confidence and their reasoning.
+
+For a check posed with `--options`, select the option indices:
 
 ```
 python3 <skill>/scripts/session.py answer --session <id> \
   --select 0 --confidence 4 --trace "…"
+```
+
+For a free-recall check posed with `--key` and no `--options`, give the learner's words and
+your judgement against the committed key:
+
+```
+python3 <skill>/scripts/session.py answer --session <id> \
+  --text "<the learner's words>" --correct true --confidence 4 --trace "…"
 ```
 
 Finish with a per-strand assessment:
@@ -106,8 +116,9 @@ python3 <skill>/scripts/session.py step-close --session <id> --node <node-id> --
 ```
 
 Never pose two checks before the first is answered. Never batch several reasoning steps
-behind one check. A failed check does not advance position — position is derived from
-the checks that actually happened.
+behind one check. A failed check leaves the node current so you repair it before moving on:
+it does not mark the node visited or completed, and it never advances to the next node.
+Position is derived from the checks that actually happened.
 
 If a check shows a prerequisite is broken, revise the plan with `plan-set` (revision 2+)
 instead of pushing on.
@@ -137,9 +148,9 @@ Ask the learner whether to close. If they decline, stop; the session stays open 
 nothing is written to the graph.
 
 If they confirm, load `references/graph.md` and run close **in a fresh invocation whose
-only input is the session log**. Read `session.py state` and `session.py render`. Do not
-read the plan: extraction is tree-blind, because the plan records what you intended to
-teach and the graph must record what the learner actually established.
+only input is the session log**. Read `session.py state` and `session.py render --no-plan`.
+Do not read the plan: extraction is tree-blind, because the plan records what you intended
+to teach and the graph must record what the learner actually established.
 
 Write proposals to a file and merge, then audit and report:
 

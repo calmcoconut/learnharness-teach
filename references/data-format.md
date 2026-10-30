@@ -174,8 +174,9 @@ At most one per session. Refused while a check is open.
 | `edges[].from` | string | yes | the prerequisite node id |
 | `edges[].to` | string | yes | the node id that depends on `from` |
 
-Validated by `plan.py` before it is appended; an invalid plan is refused, never recorded. The
-plan in force is the `plan_set` with the highest `revision`.
+Validated by `plan.py` before it is appended; an invalid plan is refused, never recorded.
+That includes an unknown key at any level and a `summary` that is not a string. The plan in
+force is the `plan_set` with the highest `revision`.
 
 ### 6. `step_closed`
 
@@ -241,8 +242,11 @@ for what each value means.
 
 | field | type | required | meaning |
 |---|---|---|---|
-| `nodes_written` | int ≥ 0 | yes | node lines this session contributed to the graph |
-| `chains_written` | int ≥ 0 | yes | chain lines this session contributed |
+| `nodes_written` | int ≥ 0 | no | node lines this session contributed to the graph |
+| `chains_written` | int ≥ 0 | no | chain lines this session contributed |
+
+Both counts are optional; `close` accepts neither, one, or both. A practice session
+legitimately closes with no counts because it writes no propositions.
 
 Terminal: nothing follows it, and at most one exists. A second `close` refuses.
 

@@ -71,6 +71,9 @@ class GraphTestCase(unittest.TestCase):
         args = ["--data-dir", data_dir or self.project.root, "--format", format, *arguments]
         return _helpers.run_script("graph.py", args, cwd=cwd or self.project.path)
 
+    def export(self, destination, *extra, format="json"):
+        return self.graph("export", "--to", destination, *extra, format=format)
+
     def records(self, *arguments, **kwargs):
         code, out, err = self.graph(*arguments, **kwargs)
         self.assertEqual(code, 0, err)
@@ -399,11 +402,44 @@ class QueryTests(GraphTestCase):
         self.assertEqual([entry["chatId"] for entry in sessions], ["lh_bbbbbbb2", "lh_aaaaaaa1"])
         self.assertEqual([entry["nodes"] for entry in sessions], [2, 2])
 
-        # n_000000000002 was born in aaaaaaa1 but is also provenanced to bbbbbbb2.
+        # Birth is the merged node's first provenance point. n_000000000002 was born
+        # in aaaaaaa1 and only link-appended in bbbbbbb2, so it must not appear there.
         second = self.records("propositions", "--session", "lh_bbbbbbb2")
-        self.assertEqual([item["id"] for item in second], ["n_000000000002", "n_000000000003"])
+        self.assertEqual([item["id"] for item in second], ["n_000000000003"])
         first = self.records("propositions", "--session", "lh_aaaaaaa1")
         self.assertEqual([item["id"] for item in first], ["n_000000000001", "n_000000000002"])
+
+    def test_propositions_session_filters_on_birth_not_later_appends(self):
+        _helpers.write_jsonl(
+            self.project.root / "graph" / "nodes.jsonl",
+            [
+                node_line(
+                    "n_000000000001",
+                    "Born in the first session.",
+                    name="First",
+                    provenance=[point("lh_aaaaaaa1", "1")],
+                ),
+                node_line(
+                    "n_000000000001",
+                    "Born in the first session.",
+                    provenance=[point("lh_aaaaaaa1", "1"), point("lh_bbbbbbb2", "2")],
+                ),
+                node_line(
+                    "n_000000000002",
+                    "Born in the second session.",
+                    name="Second",
+                    provenance=[point("lh_bbbbbbb2", "3"), point("lh_aaaaaaa1", "4")],
+                ),
+            ],
+        )
+        self.assertEqual(
+            [item["id"] for item in self.records("propositions", "--session", "lh_aaaaaaa1")],
+            ["n_000000000001"],
+        )
+        self.assertEqual(
+            [item["id"] for item in self.records("propositions", "--session", "lh_bbbbbbb2")],
+            ["n_000000000002"],
+        )
 
     def test_chains_by_node_and_unknown_node_are_nonempty_output(self):
         self.merge_ok(
@@ -480,14 +516,219 @@ class FormatAndExportTests(GraphTestCase):
         self.assertEqual(coverage.read_text(encoding="utf-8"), '{"keep":true}\n')
 
         source = self.project.root / "graph"
-        self.assertEqual((target / "nodes.jsonl").read_bytes(), (source / "nodes.jsonl").read_bytes())
-        self.assertEqual((target / "chains.jsonl").read_bytes(), (source / "chains.jsonl").read_bytes())
+        self.assertEqual(
+            (target / "graph" / "nodes.jsonl").read_bytes(), (source / "nodes.jsonl").read_bytes()
+        )
+        self.assertEqual(
+            (target / "graph" / "chains.jsonl").read_bytes(), (source / "chains.jsonl").read_bytes()
+        )
         self.assertEqual(
             set(path.name for path in target.iterdir()),
-            {"nodes.jsonl", "chains.jsonl", "format.json", "sessions.jsonl", "coverage.jsonl"},
+            {"graph", "sessions.jsonl", "coverage.jsonl"},
         )
-        stamp = json.loads((target / "format.json").read_text(encoding="utf-8"))
+        stamp = json.loads((target / "graph" / "format.json").read_text(encoding="utf-8"))
         self.assertEqual(stamp, {"version": 1})
+
+
+class ExportSafetyTests(GraphTestCase):
+    """Export is the only writer that touches data it did not create."""
+
+    def seed_graph(self):
+        return self.merge_ok(
+            {
+                "nodes": [
+                    {"ref": "a", "statement": "Premise proposition.", "name": "Premise"},
+                    {"ref": "b", "statement": "Conclusion proposition.", "name": "Conclusion"},
+                ],
+                "chains": [{"premises": ["a"], "conclusion": "b"}],
+            }
+        )
+
+    def source_bytes(self, name):
+        return (self.project.root / "graph" / name).read_bytes()
+
+    def test_export_refuses_newer_destination_format_and_writes_nothing(self):
+        self.seed_graph()
+        target = self.project.path / "app"
+        target.mkdir()
+        app_nodes = target / "nodes.jsonl"
+        app_nodes.write_text('{"id":"n_aaaaaaaaaaa1"}\n', encoding="utf-8")
+        _helpers.write_json_file(target / "format.json", {"version": 9})
+        before = _helpers.snapshot(target)
+
+        code, out, err = self.export(target)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("newer", err)
+        self.assertEqual(_helpers.snapshot(target), before)
+        self.assertEqual(app_nodes.read_text(encoding="utf-8"), '{"id":"n_aaaaaaaaaaa1"}\n')
+
+    def test_export_refuses_non_empty_destination_without_replace(self):
+        self.seed_graph()
+        target = self.project.path / "app"
+        (target / "graph").mkdir(parents=True)
+        (target / "graph" / "nodes.jsonl").write_text('{"id":"n_aaaaaaaaaaa1"}\n', encoding="utf-8")
+        (target / "graph" / "chains.jsonl").write_text("", encoding="utf-8")
+        _helpers.write_json_file(target / "graph" / "format.json", {"version": 1})
+        before = _helpers.snapshot(target)
+
+        code, out, err = self.export(target)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("--replace", err)
+        self.assertIn("nodes.jsonl", err)
+        self.assertEqual(_helpers.snapshot(target), before)
+
+    def test_export_replace_overwrites_existing_ledgers(self):
+        self.seed_graph()
+        target = self.project.path / "app"
+        (target / "graph").mkdir(parents=True)
+        (target / "graph" / "nodes.jsonl").write_text('{"id":"n_aaaaaaaaaaa1"}\n', encoding="utf-8")
+        (target / "graph" / "chains.jsonl").write_text('{"id":"arg_aaaaaaaaaaa1"}\n', encoding="utf-8")
+        _helpers.write_json_file(target / "graph" / "format.json", {"version": 1})
+        other = target / "sessions.jsonl"
+        other.write_text('{"chatId":"keep-me"}\n', encoding="utf-8")
+
+        code, out, err = self.export(target, "--replace")
+        self.assertEqual(code, 0, err)
+        result = json.loads(out)["records"][0]
+        self.assertEqual(result["action"], "replaced")
+        self.assertEqual(result["nodes"], 2)
+        self.assertEqual(result["chains"], 1)
+        self.assertEqual(result["to"], str(target / "graph"))
+
+        self.assertEqual((target / "graph" / "nodes.jsonl").read_bytes(), self.source_bytes("nodes.jsonl"))
+        self.assertEqual((target / "graph" / "chains.jsonl").read_bytes(), self.source_bytes("chains.jsonl"))
+        self.assertEqual(other.read_text(encoding="utf-8"), '{"chatId":"keep-me"}\n')
+        self.assertEqual(
+            sorted(path.name for path in (target / "graph").iterdir()),
+            ["chains.jsonl", "format.json", "nodes.jsonl"],
+        )
+
+        code, out, err = self.export(target, "--replace", format="markdown")
+        self.assertEqual(code, 0, err)
+        self.assertIn("replaced", out.lower())
+
+    def test_export_refuses_when_source_record_is_absent(self):
+        target = self.project.path / "app"
+
+        code, out, err = self.export(target)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("no graph to export", err)
+        self.assertFalse(target.exists())
+        self.assertFalse((self.project.root / "graph").exists())
+
+        target.mkdir()
+        code, out, err = self.export(target)
+        self.assertEqual(code, 1)
+        self.assertEqual(list(target.iterdir()), [])
+
+    def test_export_into_fresh_data_dir_creates_graph_subdirectory(self):
+        self.seed_graph()
+        target = self.project.path / "fresh-data"
+
+        code, out, err = self.export(target)
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["records"][0]["action"], "created")
+        graph = target / "graph"
+        self.assertEqual((graph / "nodes.jsonl").read_bytes(), self.source_bytes("nodes.jsonl"))
+        self.assertEqual((graph / "chains.jsonl").read_bytes(), self.source_bytes("chains.jsonl"))
+        self.assertEqual(json.loads((graph / "format.json").read_text(encoding="utf-8")), {"version": 1})
+        self.assertFalse((target / "nodes.jsonl").exists())
+        self.assertEqual(sorted(path.name for path in target.iterdir()), ["graph"])
+
+        code, out, err = self.export(self.project.path / "second-fresh", format="markdown")
+        self.assertEqual(code, 0, err)
+        self.assertIn("created", out.lower())
+        self.assertIn("Nodes: 2", out)
+        self.assertIn("Chains: 1", out)
+
+    def test_export_into_data_dir_with_only_chats_creates_graph_subdirectory(self):
+        self.seed_graph()
+        target = self.project.path / "app"
+        (target / "chats").mkdir(parents=True)
+        chats = target / "chats" / "chats.jsonl"
+        chats.write_text('{"keep":true}\n', encoding="utf-8")
+
+        code, out, err = self.export(target)
+
+        self.assertEqual(code, 0, err)
+        self.assertTrue((target / "graph" / "nodes.jsonl").is_file())
+        self.assertTrue((target / "graph" / "format.json").is_file())
+        self.assertFalse((target / "chats" / "nodes.jsonl").exists())
+        self.assertFalse((target / "nodes.jsonl").exists())
+        self.assertEqual(chats.read_text(encoding="utf-8"), '{"keep":true}\n')
+
+    def test_export_into_directory_with_ledgers_writes_in_place(self):
+        self.seed_graph()
+        target = self.project.path / "existing-ledgers"
+        target.mkdir()
+        (target / "nodes.jsonl").write_text("", encoding="utf-8")
+
+        code, out, err = self.export(target)
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual((target / "nodes.jsonl").read_bytes(), self.source_bytes("nodes.jsonl"))
+        self.assertTrue((target / "chains.jsonl").is_file())
+        self.assertFalse((target / "graph").exists())
+
+    def test_export_into_empty_directory_named_graph_writes_in_place(self):
+        self.seed_graph()
+        target = self.project.path / "elsewhere" / "graph"
+
+        code, out, err = self.export(target)
+
+        self.assertEqual(code, 0, err)
+        self.assertTrue((target / "nodes.jsonl").is_file())
+        self.assertFalse((target / "graph").exists())
+
+    def test_export_refuses_malformed_source_node_line(self):
+        self.seed_graph()
+        with (self.project.root / "graph" / "nodes.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write('{"id":"n_000000000001","statement":"","aliases":[],"provenance":[]}\n')
+        target = self.project.path / "app"
+
+        code, out, err = self.export(target)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("nodes.jsonl:3", err)
+        self.assertIn("empty statement", err)
+        self.assertFalse(target.exists())
+
+    def test_export_refuses_chain_with_unresolved_endpoint(self):
+        self.seed_graph()
+        with (self.project.root / "graph" / "chains.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(
+                '{"id":"arg_000000000001","premises":["n_0000000000ff"],"conclusion":"n_0000000000ff",'
+                '"provenance":[],"createdAt":"2026-01-01T00:00:00Z"}\n'
+            )
+        target = self.project.path / "app"
+
+        code, out, err = self.export(target)
+
+        self.assertEqual(code, 1)
+        self.assertIn("chains.jsonl:2", err)
+        self.assertIn("does not resolve", err)
+        self.assertFalse(target.exists())
+
+    def test_export_refuses_torn_source_line(self):
+        self.seed_graph()
+        with (self.project.root / "graph" / "nodes.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write('{"id":\n')
+        target = self.project.path / "app"
+
+        code, out, err = self.export(target)
+
+        self.assertEqual(code, 1)
+        self.assertIn("nodes.jsonl:3", err)
+        self.assertIn("malformed json", err)
+        self.assertFalse(target.exists())
 
 
 class CwdIndependenceTests(GraphTestCase):

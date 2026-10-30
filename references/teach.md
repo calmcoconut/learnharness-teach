@@ -14,7 +14,7 @@ concluded.
 On entry, run:
 
 ```bash
-python3 scripts/session.py state --session <session-id>
+python3 <skill>/scripts/session.py state --session <session-id>
 ```
 
 Run commands from the project root. Command examples use `<session-id>`, `<node-id>`, and
@@ -71,8 +71,9 @@ There is no done-ledger. No node is marked complete. There is no separate to-do 
   the earlier one visited.
 - `step-close` records a step outcome. It does not move position, and it does not mark a node
   done.
-- A failed check closes the check but moves nothing. Only a tagged check can move position,
-  and only when it names a different node.
+- A failed check closes the check but leaves the checked node current, so you repair it before
+  moving on. It does not mark that node visited or completed, and it never advances to the next
+  node.
 - A node can take several steps and several checks. Several checks can tag the same node; the
   map stays put. Moving to a new node is your judgment that the previous one is finished, not
   a script verdict.
@@ -222,7 +223,7 @@ reinforce the connection, and do not move on as if it were solid.
 ## 7. Record and read the answer
 
 ```bash
-python3 scripts/session.py answer --session <session-id> \
+python3 <skill>/scripts/session.py answer --session <session-id> \
   --select 0 --confidence 4 --trace "..."
 ```
 
@@ -281,7 +282,7 @@ recognition, not a slipped concept.
 ## 8. Close the step
 
 ```bash
-python3 scripts/session.py step-close --session <session-id> \
+python3 <skill>/scripts/session.py step-close --session <session-id> \
   --node <node-id> --outcome held
 ```
 
@@ -320,8 +321,8 @@ load that reference when you revise. Write the complete revised plan, not a patc
 first:
 
 ```bash
-python3 scripts/plan.py validate --plan <file>
-python3 scripts/session.py plan-set --session <session-id> --plan <file>
+python3 <skill>/scripts/plan.py validate --plan <file>
+python3 <skill>/scripts/session.py plan-set --session <session-id> --plan <file>
 ```
 
 `plan-set` validates again and refuses an invalid DAG. It appends the next revision; revision
