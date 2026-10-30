@@ -381,6 +381,23 @@ property that the prober has no plan-node field at all.
 | P6 | `graph_write.py`, `graph.py export`, `verify.py` | app imports the ledgers with no lost nodes or chains |
 | P7 | cross-harness validation on all four | golden transcripts pass the rubric |
 
+### Where the build actually is
+
+| # | State | Evidence |
+|---|---|---|
+| P0 | done | 145 tests green; `test_spec` and `check_stdlib_only` enforce the packaging rules |
+| P1 | done | `test_session` covers the event model, derivations, refusals and CWD independence |
+| P2 | done | `references/*` ported; `tests/fixtures/golden/teach-session.md` is the walking skeleton and its commands were executed verbatim |
+| P3 | done | `plan.py` validated against an independent transitive-closure reference over 5,000 random graphs |
+| P4 | done | position derived across a multi-step session; the golden transcript exercises a `partial` step and a plan revision |
+| P5 | done | practice fixture writes no propositions; `test_fixtures` asserts it |
+| P6 | done | `graph_write.py` + `verify.py` + `graph.py export`; the committed fixture audits clean |
+| P7 | **not done** | `docs/harness-notes.md` has the checklist and an empty divergence log. No harness has run the loop yet. |
+
+P7 is the only open item, and it cannot be closed by a test: it needs a real session in each
+of the four harnesses. Until then the portability claim rests on the packaging rules and the
+docs-drift guard, not on observed behaviour.
+
 ---
 
 ## 10. Risks carried into the build
