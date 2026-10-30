@@ -1,0 +1,21 @@
+[project]
+name = "learnharness-teach"
+version = "0.1.0"
+description = "A portable Agent Skill that runs the LearnHarness teaching loop inside any agent harness."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "AGPL-3.0-only" }
+authors = [{ name = "LearnHarness contributors" }]
+keywords = ["agent-skills", "teaching", "learning", "knowledge-graph"]
+
+# The shipped skill has no dependencies at all: every script under scripts/
+# imports the standard library only. This table is deliberately absent, and the
+# test suite enforces the absence.
+dependencies = []
+
+[project.urls]
+Homepage = "https://learnharness.ai"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"

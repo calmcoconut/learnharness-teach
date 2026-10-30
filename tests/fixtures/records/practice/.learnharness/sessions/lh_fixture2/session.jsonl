@@ -1,0 +1,4 @@
+{"seq":1,"at":"2026-01-14T09:30:00Z","type":"session_start","kind":"practice","goal":"make the second law usable"}
+{"seq":2,"at":"2026-01-14T09:30:00Z","type":"practice_problem","statement":"A fridge moves heat from cold to hot. Does this violate the second law?","mode":"discrimination","target":["second-law","irreversibility"],"modelSolution":"No. The second law applies to the system plus its surroundings; the fridge spends work, so total entropy still rises."}
+{"seq":3,"at":"2026-01-14T09:30:00Z","type":"practice_concluded","outcome":"solvedWithHints","verdict":"Got there after being asked what the second law applies to.","rung":"R2","missClass":"discrimination","retest":true,"work":"I said it does not violate it because the fridge uses electricity, so something else must be going up."}
+{"seq":4,"at":"2026-01-14T09:30:00Z","type":"session_closed"}

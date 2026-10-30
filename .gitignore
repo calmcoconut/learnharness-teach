@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Test and tooling output
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editors
+.DS_Store
+.idea/
+.vscode/
+
+# Records created by running the skill inside this repo during development.
+# A real user project commits .learnharness/; here it is scratch.
+/.learnharness/
